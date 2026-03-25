@@ -1,0 +1,79 @@
+package com.harbeyescala.api_apuntalo.entity;
+
+import com.harbeyescala.api_apuntalo.entity.enums.TicketStatus;
+import com.harbeyescala.api_apuntalo.entity.enums.PaymentMethod;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(
+    name = "tickets",
+    indexes = {
+        @Index(name = "idx_ticket_negocio_status", columnList = "negocio_id, status"),
+        @Index(name = "idx_ticket_paid_at", columnList = "paid_at"),
+        @Index(name = "idx_ticket_updated_at", columnList = "updated_at"),
+        @Index(name = "idx_ticket_mesa_negocio_status", columnList = "mesa_id, negocio_id, status"),
+        @Index(name = "idx_ticket_paid_by", columnList = "paid_by")
+    }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Ticket {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @Builder.Default
+    private TicketStatus status = TicketStatus.OPEN;
+
+    @Column(nullable = false, precision = 10, scale = 2)
+    @Builder.Default
+    private BigDecimal total = BigDecimal.ZERO;
+
+    @Column(length = 1000)
+    private String notes;
+
+    @Column(nullable = false, updatable = false)
+    @Builder.Default
+    private LocalDateTime createdAt = LocalDateTime.now();
+
+    @Column(nullable = false)
+    @Builder.Default
+    private LocalDateTime updatedAt = LocalDateTime.now();
+
+    private LocalDateTime paidAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_method", length = 20)
+    private PaymentMethod paymentMethod;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "mesa_id", nullable = false)
+    private Mesa mesa;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "negocio_id", nullable = false)
+    private Negocio negocio;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "created_by", nullable = false)
+    private User createdBy;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "paid_by")
+    private User paidBy;
+
+    @PreUpdate
+    public void preUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
+}
