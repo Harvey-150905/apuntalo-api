@@ -4,16 +4,19 @@ import com.harbeyescala.api_apuntalo.dto.UserRequestDto;
 import com.harbeyescala.api_apuntalo.dto.UserResponseDto;
 import com.harbeyescala.api_apuntalo.dto.UserUpdateDto;
 import com.harbeyescala.api_apuntalo.entity.Negocio;
+import com.harbeyescala.api_apuntalo.entity.Role;
 import com.harbeyescala.api_apuntalo.entity.User;
 import com.harbeyescala.api_apuntalo.exception.DuplicateResourceException;
 import com.harbeyescala.api_apuntalo.exception.ResourceNotFoundException;
 import com.harbeyescala.api_apuntalo.repository.NegocioRepository;
 import com.harbeyescala.api_apuntalo.repository.UserRepository;
-import com.harbeyescala.api_apuntalo.security.SecurityUtils;
+import com.harbeyescala.api_apuntalo.security.CurrentUser;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 @Service
@@ -22,33 +25,40 @@ public class UserService {
     private final UserRepository userRepository;
     private final NegocioRepository negocioRepository;
     private final PasswordEncoder passwordEncoder;
+    private final CurrentUser currentUser;
 
     public UserService(
             UserRepository userRepository,
             NegocioRepository negocioRepository,
-            PasswordEncoder passwordEncoder
+            PasswordEncoder passwordEncoder,
+            CurrentUser currentUser
     ) {
         this.userRepository = userRepository;
         this.negocioRepository = negocioRepository;
         this.passwordEncoder = passwordEncoder;
+        this.currentUser = currentUser;
     }
 
+    @Transactional
     public UserResponseDto save(UserRequestDto dto) {
         Long negocioId = resolveNegocioId(dto.getNegocioId());
+        String normalizedUsername = AuthService.normalizeUsername(dto.getUsername());
 
         Negocio negocio = negocioRepository.findById(negocioId)
                 .orElseThrow(() -> new ResourceNotFoundException("El negocio no existe"));
 
-        if (userRepository.existsByUsernameAndNegocioId(dto.getUsername(), negocioId)) {
-            throw new DuplicateResourceException("Ya existe un usuario con ese username en este negocio");
+        if (userRepository.existsByUsernameIgnoreCase(normalizedUsername)) {
+            throw new DuplicateResourceException("Ya existe un usuario con ese username");
         }
 
         User user = User.builder()
                 .nombre(dto.getNombre())
-                .username(dto.getUsername())
+                .username(normalizedUsername)
                 .password(passwordEncoder.encode(dto.getPassword()))
                 .role(dto.getRole())
                 .negocio(negocio)
+                .activo(true)
+                .tokenVersion(1)
                 .build();
 
         User savedUser = userRepository.save(user);
@@ -57,14 +67,14 @@ public class UserService {
     }
 
     public List<UserResponseDto> findAll() {
-        if (isSuperAdmin()) {
+        if (currentUser.isSuperAdmin()) {
             return userRepository.findAll()
                     .stream()
                     .map(this::mapToResponseDto)
                     .toList();
         }
 
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long negocioId = currentUser.getTenantId();
 
         return userRepository.findByNegocioId(negocioId)
                 .stream()
@@ -73,42 +83,66 @@ public class UserService {
     }
 
     public Optional<UserResponseDto> findById(Long id) {
-        if (isSuperAdmin()) {
+        if (currentUser.isSuperAdmin()) {
             return userRepository.findById(id)
                     .map(this::mapToResponseDto);
         }
 
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long negocioId = currentUser.getTenantId();
 
         return userRepository.findByIdAndNegocioId(id, negocioId)
                 .map(this::mapToResponseDto);
     }
 
+    @Transactional
     public void deleteById(Long id) {
         User user = getUserByScope(id);
         userRepository.delete(user);
     }
 
+    @Transactional
     public UserResponseDto update(Long id, UserUpdateDto dto) {
         User user = getUserByScope(id);
 
         Long negocioId = resolveNegocioId(dto.getNegocioId());
+        String normalizedUsername = AuthService.normalizeUsername(dto.getUsername());
 
         Negocio negocio = negocioRepository.findById(negocioId)
                 .orElseThrow(() -> new ResourceNotFoundException("El negocio no existe"));
 
-        if (userRepository.existsByUsernameAndNegocioIdAndIdNot(
-                dto.getUsername(),
-                negocioId,
-                id
-        )) {
-            throw new DuplicateResourceException("Ya existe un usuario con ese username en este negocio");
+        if (userRepository.existsByUsernameIgnoreCaseAndIdNot(normalizedUsername, id)) {
+            throw new DuplicateResourceException("Ya existe un usuario con ese username");
+        }
+
+        boolean securitySensitiveChange = false;
+
+        if (user.getRole() != dto.getRole()) {
+            securitySensitiveChange = true;
+        }
+
+        if (!Objects.equals(user.getNegocio().getId(), negocio.getId())) {
+            securitySensitiveChange = true;
+        }
+
+        boolean targetActivo = dto.getActivo() != null ? dto.getActivo() : user.getActivo();
+        if (!Objects.equals(user.getActivo(), targetActivo)) {
+            securitySensitiveChange = true;
+        }
+
+        if (dto.getPassword() != null && !dto.getPassword().isBlank()) {
+            user.setPassword(passwordEncoder.encode(dto.getPassword()));
+            securitySensitiveChange = true;
         }
 
         user.setNombre(dto.getNombre());
-        user.setUsername(dto.getUsername());
+        user.setUsername(normalizedUsername);
         user.setRole(dto.getRole());
         user.setNegocio(negocio);
+        user.setActivo(targetActivo);
+
+        if (securitySensitiveChange) {
+            user.setTokenVersion(user.getTokenVersion() + 1);
+        }
 
         User updatedUser = userRepository.save(user);
 
@@ -116,30 +150,26 @@ public class UserService {
     }
 
     private User getUserByScope(Long id) {
-        if (isSuperAdmin()) {
+        if (currentUser.isSuperAdmin()) {
             return userRepository.findById(id)
                     .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
         }
 
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long negocioId = currentUser.getTenantId();
 
         return userRepository.findByIdAndNegocioId(id, negocioId)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
     }
 
     private Long resolveNegocioId(Long dtoNegocioId) {
-        if (isSuperAdmin()) {
+        if (currentUser.isSuperAdmin()) {
             if (dtoNegocioId == null) {
                 throw new ResourceNotFoundException("El negocioId es obligatorio");
             }
             return dtoNegocioId;
         }
 
-        return SecurityUtils.getNegocioId();
-    }
-
-    private boolean isSuperAdmin() {
-        return "SUPER_ADMIN".equals(SecurityUtils.getRole());
+        return currentUser.getTenantId();
     }
 
     private UserResponseDto mapToResponseDto(User user) {
@@ -150,6 +180,7 @@ public class UserService {
                 .role(user.getRole())
                 .negocioId(user.getNegocio().getId())
                 .negocioNombre(user.getNegocio().getNombre())
+                .activo(user.getActivo())
                 .build();
     }
 }

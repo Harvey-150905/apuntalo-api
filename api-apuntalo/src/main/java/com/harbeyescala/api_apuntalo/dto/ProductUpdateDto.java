@@ -3,6 +3,7 @@ package com.harbeyescala.api_apuntalo.dto;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -14,6 +15,7 @@ public class ProductUpdateDto {
     private String name;
 
     @NotNull(message = "La subcategoría es obligatoria")
+    @Positive(message = "La subcategoría debe ser un id válido")
     private Long subcategoryId;
 
     @NotNull(message = "El precio es obligatorio")

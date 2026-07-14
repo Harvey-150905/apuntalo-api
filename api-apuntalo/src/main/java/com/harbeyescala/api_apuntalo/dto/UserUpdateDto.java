@@ -1,8 +1,11 @@
 package com.harbeyescala.api_apuntalo.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.harbeyescala.api_apuntalo.entity.Role;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -14,11 +17,22 @@ public class UserUpdateDto {
     private String nombre;
 
     @NotBlank(message = "El username es obligatorio")
+    @Size(max = 100, message = "El username no puede superar los 100 caracteres")
     private String username;
 
     @NotNull(message = "El rol es obligatorio")
     private Role role;
 
-    @NotNull(message = "El negocioId es obligatorio")
+    @Positive(message = "El negocioId debe ser un id válido")
     private Long negocioId;
+
+    private Boolean activo;
+
+    /**
+     * Opcional: si se envía, se cambia la contraseña e incrementa
+     * tokenVersion para invalidar sesiones previas.
+     */
+    @Size(min = 6, message = "La contraseña debe tener al menos 6 caracteres")
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    private String password;
 }

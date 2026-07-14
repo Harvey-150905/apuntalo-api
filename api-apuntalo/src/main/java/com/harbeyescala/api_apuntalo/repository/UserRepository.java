@@ -2,21 +2,21 @@ package com.harbeyescala.api_apuntalo.repository;
 
 import com.harbeyescala.api_apuntalo.entity.User;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.EntityGraph;
 
 import java.util.List;
 import java.util.Optional;
 
 public interface UserRepository extends JpaRepository<User, Long> {
 
-    Optional<User> findByUsername(String username);
+    @EntityGraph(attributePaths = "negocio")
+    Optional<User> findByUsernameIgnoreCase(String username);
 
-    Optional<User> findByUsernameAndNegocioId(String username, Long negocioId);
+    boolean existsByUsernameIgnoreCase(String username);
+
+    boolean existsByUsernameIgnoreCaseAndIdNot(String username, Long excludedUserId);
 
     List<User> findByNegocioId(Long negocioId);
 
     Optional<User> findByIdAndNegocioId(Long id, Long negocioId);
-
-    boolean existsByUsernameAndNegocioId(String username, Long negocioId);
-
-    boolean existsByUsernameAndNegocioIdAndIdNot(String username, Long negocioId, Long id);
 }

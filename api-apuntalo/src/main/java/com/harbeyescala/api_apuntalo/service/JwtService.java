@@ -1,5 +1,6 @@
 package com.harbeyescala.api_apuntalo.service;
 
+import com.harbeyescala.api_apuntalo.entity.User;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
@@ -32,19 +33,29 @@ public class JwtService {
         }
     }
 
-    public String generateToken(Long userId, String username, Long negocioId, String negocioNombre, String role) {
+    /**
+     * Genera el JWT operativo del usuario. Las claims mínimas exigidas son
+     * userId, username, role, tenantId y tokenVersion; sub es el userId.
+     */
+    public String generateToken(User user) {
         return Jwts.builder()
-                .setSubject(username)
-                .claim("userId", userId)
-                .claim("negocioId", negocioId)
-                .claim("negocioNombre", negocioNombre)
-                .claim("role", role)
+                .setSubject(String.valueOf(user.getId()))
+                .claim("userId", user.getId())
+                .claim("username", user.getUsername())
+                .claim("role", user.getRole().name())
+                .claim("tenantId", user.getNegocio().getId())
+                .claim("tenantName", user.getNegocio().getNombre())
+                .claim("tokenVersion", user.getTokenVersion())
                 .setIssuedAt(new Date())
                 .setExpiration(new Date(System.currentTimeMillis() + expirationMs))
                 .signWith(key)
                 .compact();
     }
-    
+
+    public long getExpirationSeconds() {
+        return expirationMs / 1000;
+    }
+
     public Claims extractClaims(String token) {
         return Jwts.parserBuilder()
                 .setSigningKey(key)

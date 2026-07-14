@@ -12,6 +12,7 @@ import com.harbeyescala.api_apuntalo.repository.ProductRepository;
 import com.harbeyescala.api_apuntalo.repository.SubcategoryRepository;
 import com.harbeyescala.api_apuntalo.security.SecurityUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import java.util.Map;
 
@@ -80,6 +81,7 @@ public class ProductService {
         return mapToResponseDto(saved);
     }
 
+    @Transactional(readOnly = true)
     public List<ProductResponseDto> findAllActivos() {
 
         Long negocioId = SecurityUtils.getNegocioId();
@@ -90,6 +92,7 @@ public class ProductService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
     public List<ProductResponseDto> findAll() {
 
         Long negocioId = SecurityUtils.getNegocioId();
@@ -100,6 +103,7 @@ public class ProductService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
     public ProductResponseDto findById(Long id) {
 
         Long negocioId = SecurityUtils.getNegocioId();

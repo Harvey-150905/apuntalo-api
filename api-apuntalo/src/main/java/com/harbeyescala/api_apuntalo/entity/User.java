@@ -10,7 +10,7 @@ import jakarta.validation.constraints.NotNull;
 @Table(
     name = "users",
     uniqueConstraints = {
-        @UniqueConstraint(columnNames = {"negocio_id", "username"})
+        @UniqueConstraint(name = "uk_users_username", columnNames = {"username"})
     }
 )
 @Getter
@@ -28,6 +28,11 @@ public class User {
     @Column(nullable = false)
     private String nombre;
 
+    /**
+     * Username único globalmente en toda la plataforma. Se almacena siempre
+     * normalizado (trim + minúsculas) para que la restricción única de BD
+     * baste como defensa adicional a las consultas IgnoreCase.
+     */
     @NotBlank(message = "El username es obligatorio")
     @Column(nullable = false)
     private String username;
@@ -46,4 +51,17 @@ public class User {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "negocio_id", nullable = false)
     private Negocio negocio;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private Boolean activo = true;
+
+    /**
+     * Se incrementa en cada evento que invalida tokens ya emitidos
+     * (cambio de password, rol, negocio o desactivación). El filtro JWT
+     * rechaza cualquier token cuyo tokenVersion no coincida con el actual.
+     */
+    @Builder.Default
+    @Column(nullable = false)
+    private Integer tokenVersion = 1;
 }

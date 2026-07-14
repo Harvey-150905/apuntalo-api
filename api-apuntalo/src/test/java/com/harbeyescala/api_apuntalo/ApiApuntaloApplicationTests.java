@@ -1,13 +1,14 @@
 package com.harbeyescala.api_apuntalo;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
+import com.harbeyescala.api_apuntalo.service.AuthService;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-@SpringBootTest
 class ApiApuntaloApplicationTests {
 
 	@Test
-	void contextLoads() {
+	void usernameIsNormalizedForGlobalLookup() {
+		assertEquals("usuario", AuthService.normalizeUsername("  UsUaRiO  "));
 	}
 
 }

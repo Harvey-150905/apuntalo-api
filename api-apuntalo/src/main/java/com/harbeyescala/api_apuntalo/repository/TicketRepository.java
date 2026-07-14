@@ -4,7 +4,9 @@ import com.harbeyescala.api_apuntalo.dto.UserSalesSummaryDto;
 import com.harbeyescala.api_apuntalo.entity.Ticket;
 import com.harbeyescala.api_apuntalo.entity.enums.PaymentMethod;
 import com.harbeyescala.api_apuntalo.entity.enums.TicketStatus;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.domain.Page;
@@ -130,5 +132,16 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
 
     boolean existsByMesaIdAndNegocioIdAndStatus(Long mesaId, Long negocioId, TicketStatus status);
 
-    
+    /**
+     * Carga el ticket bajo bloqueo pesimista de escritura para cualquier
+     * operación que vaya a leer/mutar su estado o total (Fase 3.3).
+     * Serializa a nivel de fila las peticiones concurrentes sobre el mismo
+     * ticket sin bloquear el resto de la tabla.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from Ticket t where t.id = :ticketId and t.negocio.id = :tenantId")
+    Optional<Ticket> findByIdAndNegocioIdForUpdate(
+            @Param("ticketId") Long ticketId,
+            @Param("tenantId") Long tenantId
+    );
 }

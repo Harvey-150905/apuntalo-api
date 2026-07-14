@@ -3,6 +3,7 @@ package com.harbeyescala.api_apuntalo.controller;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -11,14 +12,15 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.harbeyescala.api_apuntalo.dto.AddTicketLinesRequestDto;
 import com.harbeyescala.api_apuntalo.dto.CashClosingSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.ChangeTicketMesaRequestDto;
+import com.harbeyescala.api_apuntalo.dto.IdempotentOutcome;
 import com.harbeyescala.api_apuntalo.dto.PageResponseDto;
 import com.harbeyescala.api_apuntalo.dto.PayTicketRequestDto;
 import com.harbeyescala.api_apuntalo.dto.PaymentMethodSummaryDto;
@@ -30,6 +32,7 @@ import com.harbeyescala.api_apuntalo.dto.UserSalesSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.ProductSalesSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.DailySalesSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.AverageTicketSummaryDto;
+import com.harbeyescala.api_apuntalo.service.IdempotencyService;
 import com.harbeyescala.api_apuntalo.service.TicketService;
 
 import jakarta.validation.Valid;
@@ -38,16 +41,32 @@ import jakarta.validation.Valid;
 @RequestMapping("/api/tickets")
 public class TicketController {
 
-    private final TicketService ticketService;
+    private static final String IDEMPOTENCY_HEADER = "Idempotency-Key";
 
-    public TicketController(TicketService ticketService) {
+    private final TicketService ticketService;
+    private final IdempotencyService idempotencyService;
+
+    public TicketController(TicketService ticketService, IdempotencyService idempotencyService) {
         this.ticketService = ticketService;
+        this.idempotencyService = idempotencyService;
     }
 
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public TicketResponseDto create(@Valid @RequestBody TicketRequestDto dto) {
-        return ticketService.create(dto);
+    public ResponseEntity<TicketResponseDto> create(
+            @Valid @RequestBody TicketRequestDto dto,
+            @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey
+    ) {
+        IdempotentOutcome<TicketResponseDto> outcome = idempotencyService.execute(
+                "TICKET_CREATE",
+                "TICKET",
+                idempotencyKey,
+                dto,
+                HttpStatus.CREATED.value(),
+                TicketResponseDto.class,
+                () -> ticketService.create(dto)
+        );
+
+        return toResponseEntity(outcome);
     }
 
     @GetMapping("/mesa/{mesaId}")
@@ -61,39 +80,97 @@ public class TicketController {
     }
 
     @PostMapping("/{ticketId}/lines")
-    public TicketResponseDto addLines(
+    public ResponseEntity<TicketResponseDto> addLines(
             @PathVariable Long ticketId,
-            @Valid @RequestBody AddTicketLinesRequestDto dto
+            @Valid @RequestBody AddTicketLinesRequestDto dto,
+            @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey
     ) {
-        return ticketService.addLines(ticketId, dto);
+        IdempotentOutcome<TicketResponseDto> outcome = idempotencyService.execute(
+                "TICKET_ADD_LINES",
+                "TICKET",
+                idempotencyKey,
+                Map.of("ticketId", ticketId, "body", dto),
+                HttpStatus.OK.value(),
+                TicketResponseDto.class,
+                () -> ticketService.addLines(ticketId, dto)
+        );
+
+        return toResponseEntity(outcome);
     }
 
     @PostMapping("/{ticketId}/pay")
-    public TicketDetailResponseDto pay(
+    public ResponseEntity<TicketDetailResponseDto> pay(
             @PathVariable Long ticketId,
-            @Valid @RequestBody PayTicketRequestDto dto
+            @Valid @RequestBody PayTicketRequestDto dto,
+            @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey
     ) {
-        return ticketService.pay(ticketId, dto);
+        IdempotentOutcome<TicketDetailResponseDto> outcome = idempotencyService.execute(
+                "TICKET_PAY",
+                "TICKET",
+                idempotencyKey,
+                Map.of("ticketId", ticketId, "body", dto),
+                HttpStatus.OK.value(),
+                TicketDetailResponseDto.class,
+                () -> ticketService.pay(ticketId, dto)
+        );
+
+        return toResponseEntity(outcome);
     }
 
     @PatchMapping("/{ticketId}/lines/{lineId}/cancel")
-    public TicketDetailResponseDto cancelLine(
+    public ResponseEntity<TicketDetailResponseDto> cancelLine(
             @PathVariable Long ticketId,
-            @PathVariable Long lineId
+            @PathVariable Long lineId,
+            @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey
     ) {
-        return ticketService.cancelLine(ticketId, lineId);
+        IdempotentOutcome<TicketDetailResponseDto> outcome = idempotencyService.execute(
+                "TICKET_CANCEL_LINE",
+                "TICKET",
+                idempotencyKey,
+                Map.of("ticketId", ticketId, "lineId", lineId),
+                HttpStatus.OK.value(),
+                TicketDetailResponseDto.class,
+                () -> ticketService.cancelLine(ticketId, lineId)
+        );
+
+        return toResponseEntity(outcome);
     }
+
     @PatchMapping("/{ticketId}/cancel")
-    public TicketDetailResponseDto cancelTicket(@PathVariable Long ticketId) {
-        return ticketService.cancelTicket(ticketId);
+    public ResponseEntity<TicketDetailResponseDto> cancelTicket(
+            @PathVariable Long ticketId,
+            @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey
+    ) {
+        IdempotentOutcome<TicketDetailResponseDto> outcome = idempotencyService.execute(
+                "TICKET_CANCEL",
+                "TICKET",
+                idempotencyKey,
+                Map.of("ticketId", ticketId),
+                HttpStatus.OK.value(),
+                TicketDetailResponseDto.class,
+                () -> ticketService.cancelTicket(ticketId)
+        );
+
+        return toResponseEntity(outcome);
     }
 
     @PatchMapping("/{ticketId}/batches/{batchNumber}/cancel")
-    public TicketDetailResponseDto cancelBatch(
+    public ResponseEntity<TicketDetailResponseDto> cancelBatch(
             @PathVariable Long ticketId,
-            @PathVariable Integer batchNumber
+            @PathVariable Integer batchNumber,
+            @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey
     ) {
-        return ticketService.cancelBatch(ticketId, batchNumber);
+        IdempotentOutcome<TicketDetailResponseDto> outcome = idempotencyService.execute(
+                "TICKET_CANCEL_BATCH",
+                "TICKET",
+                idempotencyKey,
+                Map.of("ticketId", ticketId, "batchNumber", batchNumber),
+                HttpStatus.OK.value(),
+                TicketDetailResponseDto.class,
+                () -> ticketService.cancelBatch(ticketId, batchNumber)
+        );
+
+        return toResponseEntity(outcome);
     }
 
     @GetMapping("/paid")
@@ -107,7 +184,7 @@ public class TicketController {
             ticketService.findPaidTicketsPaged(from, to, page, size)
         );
     }
-    
+
     @GetMapping("/open")
     public ResponseEntity<PageResponseDto<TicketResponseDto>> getOpenTickets(
         @RequestParam(defaultValue = "0") int page,
@@ -159,11 +236,22 @@ public class TicketController {
         return ticketService.updateNotes(ticketId, dto);
     }
     @PatchMapping("/{ticketId}/mesa")
-    public TicketDetailResponseDto changeMesa(
+    public ResponseEntity<TicketDetailResponseDto> changeMesa(
             @PathVariable Long ticketId,
-            @Valid @RequestBody ChangeTicketMesaRequestDto dto
+            @Valid @RequestBody ChangeTicketMesaRequestDto dto,
+            @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey
     ) {
-        return ticketService.changeMesa(ticketId, dto);
+        IdempotentOutcome<TicketDetailResponseDto> outcome = idempotencyService.execute(
+                "TICKET_CHANGE_MESA",
+                "TICKET",
+                idempotencyKey,
+                Map.of("ticketId", ticketId, "body", dto),
+                HttpStatus.OK.value(),
+                TicketDetailResponseDto.class,
+                () -> ticketService.changeMesa(ticketId, dto)
+        );
+
+        return toResponseEntity(outcome);
     }
     @GetMapping("/paid/product-summary")
     public List<ProductSalesSummaryDto> getProductSalesSummary(
@@ -187,5 +275,15 @@ public class TicketController {
             @RequestParam LocalDate to
     ) {
         return ticketService.getAverageTicketSummary(from, to);
+    }
+
+    private <T> ResponseEntity<T> toResponseEntity(IdempotentOutcome<T> outcome) {
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(outcome.status());
+
+        if (outcome.replayed()) {
+            builder = builder.header("Idempotency-Replayed", "true");
+        }
+
+        return builder.body(outcome.body());
     }
 }

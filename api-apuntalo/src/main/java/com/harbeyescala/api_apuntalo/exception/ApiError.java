@@ -1,10 +1,18 @@
 package com.harbeyescala.api_apuntalo.exception;
 
-import lombok.AllArgsConstructor;
 import lombok.Getter;
 
 @Getter
-@AllArgsConstructor
 public class ApiError {
-    private String message;
+    private final String code;
+    private final String message;
+
+    public ApiError(String message) {
+        this("ERROR", message);
+    }
+
+    public ApiError(String code, String message) {
+        this.code = code;
+        this.message = message;
+    }
 }

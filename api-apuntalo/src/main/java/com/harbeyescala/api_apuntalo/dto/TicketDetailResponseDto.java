@@ -2,8 +2,10 @@ package com.harbeyescala.api_apuntalo.dto;
 
 import com.harbeyescala.api_apuntalo.entity.enums.TicketStatus;
 import com.harbeyescala.api_apuntalo.entity.enums.PaymentMethod;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -11,6 +13,8 @@ import java.util.List;
 
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class TicketDetailResponseDto {
 
     private Long id;

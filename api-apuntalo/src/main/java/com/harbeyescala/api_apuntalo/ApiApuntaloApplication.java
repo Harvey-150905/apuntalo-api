@@ -7,7 +7,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class ApiApuntaloApplication {
 
 	public static void main(String[] args) {
-		System.out.println(new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode("admin123"));
 		SpringApplication.run(ApiApuntaloApplication.class, args);
 	}
 	

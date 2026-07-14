@@ -16,4 +16,5 @@ public class UserResponseDto {
     private Role role;
     private Long negocioId;
     private String negocioNombre;
+    private Boolean activo;
 }

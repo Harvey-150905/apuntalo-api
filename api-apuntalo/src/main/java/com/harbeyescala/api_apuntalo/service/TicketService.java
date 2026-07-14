@@ -40,6 +40,8 @@ import com.harbeyescala.api_apuntalo.entity.enums.MesaStatus;
 import com.harbeyescala.api_apuntalo.entity.enums.PaymentMethod;
 import com.harbeyescala.api_apuntalo.entity.enums.TicketLineStatus;
 import com.harbeyescala.api_apuntalo.entity.enums.TicketStatus;
+import com.harbeyescala.api_apuntalo.exception.BusinessRuleException;
+import com.harbeyescala.api_apuntalo.exception.ConflictException;
 import com.harbeyescala.api_apuntalo.exception.ResourceNotFoundException;
 import com.harbeyescala.api_apuntalo.repository.MesaRepository;
 import com.harbeyescala.api_apuntalo.repository.NegocioRepository;
@@ -47,7 +49,7 @@ import com.harbeyescala.api_apuntalo.repository.ProductRepository;
 import com.harbeyescala.api_apuntalo.repository.TicketLineRepository;
 import com.harbeyescala.api_apuntalo.repository.TicketRepository;
 import com.harbeyescala.api_apuntalo.repository.UserRepository;
-import com.harbeyescala.api_apuntalo.security.SecurityUtils;
+import com.harbeyescala.api_apuntalo.security.CurrentUser;
 import java.util.Optional;
 
 @Service
@@ -59,6 +61,7 @@ public class TicketService {
     private final UserRepository userRepository;
     private final TicketLineRepository ticketLineRepository;
     private final ProductRepository productRepository;
+    private final CurrentUser currentUser;
 
     public TicketService(
             TicketRepository ticketRepository,
@@ -66,7 +69,8 @@ public class TicketService {
             NegocioRepository negocioRepository,
             UserRepository userRepository,
             TicketLineRepository ticketLineRepository,
-            ProductRepository productRepository
+            ProductRepository productRepository,
+            CurrentUser currentUser
     ) {
         this.ticketRepository = ticketRepository;
         this.mesaRepository = mesaRepository;
@@ -74,34 +78,40 @@ public class TicketService {
         this.userRepository = userRepository;
         this.ticketLineRepository = ticketLineRepository;
         this.productRepository = productRepository;
+        this.currentUser = currentUser;
     }
+
+    // ------------------------------------------------------------------
+    // Creación
+    // ------------------------------------------------------------------
 
     @Transactional
     public TicketResponseDto create(TicketRequestDto dto) {
-        Long negocioId = SecurityUtils.getNegocioId();
-        Long userId = SecurityUtils.getUserId();
+        Long tenantId = currentUser.getTenantId();
+        Long userId = currentUser.getUserId();
 
-        Mesa mesa = mesaRepository.findByIdAndNegocioId(dto.getMesaId(), negocioId)
+        // Bloqueo de mesa: comprobar-y-ocupar debe ser atómico (Fase 3.4).
+        Mesa mesa = mesaRepository.findByIdAndNegocioIdForUpdate(dto.getMesaId(), tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
         if (!Boolean.TRUE.equals(mesa.getActiva())) {
-            throw new IllegalStateException("La mesa está desactivada");
+            throw new BusinessRuleException("MESA_INACTIVE", "La mesa está desactivada");
         }
 
         boolean alreadyOpen = ticketRepository.existsByMesaIdAndNegocioIdAndStatus(
                 mesa.getId(),
-                negocioId,
+                tenantId,
                 TicketStatus.OPEN
         );
 
         if (alreadyOpen) {
-            throw new IllegalStateException("La mesa ya tiene un ticket abierto");
+            throw new ConflictException("TABLE_ALREADY_OCCUPIED", "La mesa ya tiene un ticket abierto");
         }
 
-        Negocio negocio = negocioRepository.findById(negocioId)
+        Negocio negocio = negocioRepository.findById(tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado"));
 
-        User createdBy = userRepository.findById(userId)
+        User createdBy = userRepository.findByIdAndNegocioId(userId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
 
         Ticket ticket = Ticket.builder()
@@ -113,6 +123,8 @@ public class TicketService {
                 .createdBy(createdBy)
                 .build();
 
+        // La restricción única parcial "uk_ticket_mesa_open" (Postgres) es la
+        // última línea de defensa si dos transacciones llegan a coincidir.
         Ticket savedTicket = ticketRepository.save(ticket);
 
         mesa.setStatus(MesaStatus.OCCUPIED);
@@ -122,14 +134,14 @@ public class TicketService {
     }
 
     public TicketResponseDto findOpenByMesa(Long mesaId) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
-        mesaRepository.findByIdAndNegocioId(mesaId, negocioId)
+        mesaRepository.findByIdAndNegocioId(mesaId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
         Ticket ticket = ticketRepository.findByMesaIdAndNegocioIdAndStatus(
                         mesaId,
-                        negocioId,
+                        tenantId,
                         TicketStatus.OPEN
                 )
                 .orElseThrow(() -> new ResourceNotFoundException("La mesa no tiene ticket abierto"));
@@ -137,14 +149,20 @@ public class TicketService {
         return toResponse(ticket);
     }
 
+    // ------------------------------------------------------------------
+    // Añadir líneas
+    // ------------------------------------------------------------------
+
     @Transactional
     public TicketResponseDto addLines(Long ticketId, AddTicketLinesRequestDto dto) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, negocioId)
+        // Bloqueo del ticket: serializa el cálculo del batch y del total
+        // frente a otras tablets añadiendo líneas al mismo ticket (Fase 3.7/3.8).
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureTicketOpen(ticket);
+        ensureOpen(ticket);
 
         Integer lastBatch = ticketLineRepository.findTopByTicketIdOrderByBatchNumberDesc(ticketId)
                 .map(TicketLine::getBatchNumber)
@@ -156,13 +174,13 @@ public class TicketService {
 
         for (TicketLineRequestDto lineDto : dto.getLines()) {
             String normalizedNotes = normalizeNotes(lineDto.getNotes());
-            Product product = productRepository.findByIdAndNegocioId(lineDto.getProductId(), negocioId)
+            Product product = productRepository.findByIdAndNegocioId(lineDto.getProductId(), tenantId)
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "Producto no encontrado: " + lineDto.getProductId()
                     ));
 
             if (!Boolean.TRUE.equals(product.getActivo())) {
-                throw new IllegalStateException("El producto está inactivo: " + product.getName());
+                throw new BusinessRuleException("PRODUCT_INACTIVE", "El producto está inactivo: " + product.getName());
             }
 
             String key = buildGroupKey(product.getId(), normalizedNotes);
@@ -172,7 +190,7 @@ public class TicketService {
                 int newQuantity = existing.getQuantity() + lineDto.getQuantity();
 
                 if (newQuantity > 100) {
-                    throw new IllegalStateException("La cantidad total para un mismo producto no puede ser mayor que 100");
+                    throw new BusinessRuleException("INVALID_QUANTITY", "La cantidad total para un mismo producto no puede ser mayor que 100");
                 }
 
                 existing.setQuantity(newQuantity);
@@ -211,24 +229,41 @@ public class TicketService {
         return toResponse(ticketRepository.save(ticket));
     }
 
+    // ------------------------------------------------------------------
+    // Pago
+    // ------------------------------------------------------------------
+
     @Transactional
     public TicketDetailResponseDto pay(Long ticketId, PayTicketRequestDto dto) {
-        Long negocioId = SecurityUtils.getNegocioId();
-        Long userId = SecurityUtils.getUserId();
+        Long tenantId = currentUser.getTenantId();
+        Long userId = currentUser.getUserId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, negocioId)
+        // Bloqueo de escritura antes de comprobar el estado (Fase 3.6): la
+        // segunda petición concurrente espera a que la primera termine y
+        // encuentra el ticket ya PAID, sin volver a cobrar.
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        if (ticket.getStatus() != TicketStatus.OPEN) {
-            throw new IllegalStateException("Solo se pueden pagar tickets abiertos");
+        ensureOpen(ticket);
+
+        List<TicketLine> activeLines = ticketLineRepository.findByTicketIdAndStatusOrderByCreatedAtAsc(
+                ticket.getId(),
+                TicketLineStatus.ACTIVE
+        );
+
+        if (activeLines.isEmpty()) {
+            throw new BusinessRuleException("TICKET_EMPTY", "No se puede pagar un ticket sin líneas activas");
         }
 
-        List<TicketLine> activeLines = getActiveLinesOrThrow(ticket);
+        BigDecimal total = sumActive(activeLines);
+        ticket.setTotal(total);
 
-        User paidBy = userRepository.findById(userId)
+        if (total.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessRuleException("TICKET_EMPTY", "El total del ticket debe ser mayor que cero");
+        }
+
+        User paidBy = userRepository.findByIdAndNegocioId(userId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
-
-        recalculateTicketTotal(ticket);
 
         ticket.setStatus(TicketStatus.PAID);
         ticket.setPaidAt(LocalDateTime.now());
@@ -237,11 +272,7 @@ public class TicketService {
 
         ticketRepository.save(ticket);
 
-        Mesa mesa = ticket.getMesa();
-        if (mesa != null) {
-            mesa.setStatus(MesaStatus.FREE);
-            mesaRepository.save(mesa);
-        }
+        freeMesa(ticket, tenantId);
 
         List<TicketLineResponseDto> lines = activeLines.stream()
                 .map(this::toLineResponse)
@@ -250,34 +281,32 @@ public class TicketService {
         return toDetailResponse(ticket, lines);
     }
 
+    // ------------------------------------------------------------------
+    // Cancelaciones
+    // ------------------------------------------------------------------
+
     @Transactional
     public TicketDetailResponseDto cancelLine(Long ticketId, Long lineId) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, negocioId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureTicketOpen(ticket);
+        ensureOpen(ticket);
 
         TicketLine line = ticketLineRepository
-                .findByIdAndTicketIdAndTicketNegocioId(lineId, ticketId, negocioId)
+                .findByIdAndTicketIdAndTicketNegocioId(lineId, ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Línea no encontrada"));
 
-        if (!line.getTicket().getId().equals(ticket.getId())) {
-            throw new ResourceNotFoundException("La línea no pertenece al ticket indicado");
-        }
-
-        if (!line.getTicket().getNegocio().getId().equals(negocioId)) {
-            throw new ResourceNotFoundException("Línea no encontrada");
-        }
-
         if (line.getStatus() == TicketLineStatus.CANCELLED) {
-            throw new IllegalStateException("La línea ya está cancelada");
+            throw new BusinessRuleException("LINE_ALREADY_CANCELLED", "La línea ya está cancelada");
         }
 
         line.setStatus(TicketLineStatus.CANCELLED);
         ticketLineRepository.save(line);
 
+        // El recálculo nunca falla por falta de líneas activas: si esta era
+        // la última, el total simplemente queda en cero (Fase 2.2).
         recalculateTicketTotal(ticket);
         ticketRepository.save(ticket);
 
@@ -292,27 +321,30 @@ public class TicketService {
 
     @Transactional
     public TicketDetailResponseDto cancelBatch(Long ticketId, Integer batchNumber) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, negocioId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureTicketOpen(ticket);
+        ensureOpen(ticket);
 
         List<TicketLine> lines = ticketLineRepository
-            .findByTicketIdAndBatchNumberAndTicketNegocioId(ticketId, batchNumber, negocioId);
+            .findByTicketIdAndBatchNumberAndTicketNegocioId(ticketId, batchNumber, tenantId);
 
         if (lines.isEmpty()) {
             throw new ResourceNotFoundException("Batch no encontrado");
         }
 
-        for (TicketLine line : lines) {
-            if (line.getStatus() == TicketLineStatus.ACTIVE) {
-                line.setStatus(TicketLineStatus.CANCELLED);
-            }
+        List<TicketLine> activeLines = lines.stream()
+                .filter(line -> line.getStatus() == TicketLineStatus.ACTIVE)
+                .toList();
+
+        if (activeLines.isEmpty()) {
+            throw new BusinessRuleException("BATCH_ALREADY_CANCELLED", "El batch ya no tiene líneas activas");
         }
 
-        ticketLineRepository.saveAll(lines);
+        activeLines.forEach(line -> line.setStatus(TicketLineStatus.CANCELLED));
+        ticketLineRepository.saveAll(activeLines);
 
         recalculateTicketTotal(ticket);
         ticketRepository.save(ticket);
@@ -328,32 +360,34 @@ public class TicketService {
 
     @Transactional
     public TicketDetailResponseDto cancelTicket(Long ticketId) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
+        Long userId = currentUser.getUserId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, negocioId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureTicketOpen(ticket);
+        ensureOpen(ticket);
 
         List<TicketLine> lines = ticketLineRepository
-            .findByTicketIdAndTicketNegocioIdOrderByCreatedAtAsc(ticket.getId(), negocioId);
+            .findByTicketIdAndTicketNegocioIdOrderByCreatedAtAsc(ticket.getId(), tenantId);
 
-        for (TicketLine line : lines) {
-            if (line.getStatus() == TicketLineStatus.ACTIVE) {
-                line.setStatus(TicketLineStatus.CANCELLED);
-            }
-        }
+        List<TicketLine> activeLines = lines.stream()
+                .filter(line -> line.getStatus() == TicketLineStatus.ACTIVE)
+                .toList();
 
-        ticketLineRepository.saveAll(lines);
+        activeLines.forEach(line -> line.setStatus(TicketLineStatus.CANCELLED));
+        ticketLineRepository.saveAll(activeLines);
 
-        recalculateTicketTotal(ticket); // quedará en 0
+        recalculateTicketTotal(ticket); // queda en 0
+
+        User cancelledBy = userRepository.findByIdAndNegocioId(userId, tenantId).orElse(null);
 
         ticket.setStatus(TicketStatus.CANCELLED);
+        ticket.setCancelledAt(LocalDateTime.now());
+        ticket.setCancelledBy(cancelledBy);
         ticketRepository.save(ticket);
 
-        Mesa mesa = ticket.getMesa();
-        mesa.setStatus(MesaStatus.FREE);
-        mesaRepository.save(mesa);
+        freeMesa(ticket, tenantId);
 
         List<TicketLineResponseDto> responseLines = lines.stream()
                 .map(this::toLineResponse)
@@ -362,23 +396,96 @@ public class TicketService {
         return toDetailResponse(ticket, responseLines);
     }
 
+    private void freeMesa(Ticket ticket, Long tenantId) {
+        if (ticket.getMesa() == null) {
+            return;
+        }
+
+        Mesa mesa = mesaRepository.findByIdAndNegocioIdForUpdate(ticket.getMesa().getId(), tenantId)
+                .orElse(ticket.getMesa());
+        mesa.setStatus(MesaStatus.FREE);
+        mesaRepository.save(mesa);
+    }
+
+    // ------------------------------------------------------------------
+    // Cambio de mesa
+    // ------------------------------------------------------------------
+
+    @Transactional
+    public TicketDetailResponseDto changeMesa(Long ticketId, ChangeTicketMesaRequestDto dto) {
+        Long tenantId = currentUser.getTenantId();
+
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+            .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
+
+        ensureOpen(ticket);
+
+        Long originMesaId = ticket.getMesa().getId();
+        Long destinationMesaId = dto.getMesaId();
+
+        if (originMesaId.equals(destinationMesaId)) {
+            List<TicketLineResponseDto> sameLines = currentLines(ticket, tenantId);
+            return toDetailResponse(ticket, sameLines);
+        }
+
+        // Orden determinista de bloqueo por id ascendente (Fase 3.9) para
+        // evitar deadlocks entre dos cambios de mesa cruzados.
+        Long firstId = Math.min(originMesaId, destinationMesaId);
+        Long secondId = Math.max(originMesaId, destinationMesaId);
+
+        Mesa firstMesa = mesaRepository.findByIdAndNegocioIdForUpdate(firstId, tenantId)
+                .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
+        Mesa secondMesa = mesaRepository.findByIdAndNegocioIdForUpdate(secondId, tenantId)
+                .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
+
+        Mesa origen = firstId.equals(originMesaId) ? firstMesa : secondMesa;
+        Mesa destino = firstId.equals(destinationMesaId) ? firstMesa : secondMesa;
+
+        if (!Boolean.TRUE.equals(destino.getActiva())) {
+            throw new BusinessRuleException("MESA_INACTIVE", "No se puede mover el ticket a una mesa inactiva");
+        }
+
+        Optional<Ticket> existingOpenTicket = ticketRepository
+                .findByMesaIdAndNegocioIdAndStatus(destino.getId(), tenantId, TicketStatus.OPEN);
+
+        if (existingOpenTicket.isPresent() && !existingOpenTicket.get().getId().equals(ticket.getId())) {
+            throw new ConflictException("TABLE_ALREADY_OCCUPIED", "La mesa seleccionada ya tiene un ticket abierto");
+        }
+
+        ticket.setMesa(destino);
+        ticketRepository.save(ticket);
+
+        origen.setStatus(MesaStatus.FREE);
+        mesaRepository.save(origen);
+
+        destino.setStatus(MesaStatus.OCCUPIED);
+        mesaRepository.save(destino);
+
+        return toDetailResponse(ticket, currentLines(ticket, tenantId));
+    }
+
+    private List<TicketLineResponseDto> currentLines(Ticket ticket, Long tenantId) {
+        return ticketLineRepository
+                .findByTicketIdAndTicketNegocioIdOrderByCreatedAtAsc(ticket.getId(), tenantId)
+                .stream()
+                .map(this::toLineResponse)
+                .toList();
+    }
+
+    // ------------------------------------------------------------------
+    // Consultas / reportes (sin bloqueo, no mutan estado)
+    // ------------------------------------------------------------------
+
     public PaymentMethodSummaryDto getPaymentMethodSummary(LocalDate from, LocalDate to) {
-        Long negocioId = SecurityUtils.getNegocioId();
-
-        if (from == null || to == null) {
-            throw new IllegalStateException("Debes enviar ambas fechas");
-        }
-
-        if (from.isAfter(to)) {
-            throw new IllegalStateException("La fecha 'from' no puede ser mayor que 'to'");
-        }
+        Long tenantId = currentUser.getTenantId();
+        validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
         LocalDateTime toDateTime = to.atTime(23, 59, 59);
 
         BigDecimal cashTotal = ticketRepository
                 .sumTotalByNegocioIdAndStatusAndPaymentMethodAndPaidAtBetween(
-                        negocioId,
+                        tenantId,
                         TicketStatus.PAID,
                         PaymentMethod.CASH,
                         fromDateTime,
@@ -387,7 +494,7 @@ public class TicketService {
 
         BigDecimal cardTotal = ticketRepository
                 .sumTotalByNegocioIdAndStatusAndPaymentMethodAndPaidAtBetween(
-                        negocioId,
+                        tenantId,
                         TicketStatus.PAID,
                         PaymentMethod.CARD,
                         fromDateTime,
@@ -396,7 +503,7 @@ public class TicketService {
 
         BigDecimal totalSales = ticketRepository
             .sumTotalByNegocioIdAndStatusAndPaidAtBetween(
-                    negocioId,
+                    tenantId,
                     TicketStatus.PAID,
                     fromDateTime,
                     toDateTime
@@ -408,31 +515,26 @@ public class TicketService {
                 totalSales != null ? totalSales : BigDecimal.ZERO
         );
     }
-    
-    public TicketDetailResponseDto findDetailById(Long ticketId) {
-        Long negocioId = SecurityUtils.getNegocioId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, negocioId)
+    @Transactional(readOnly = true)
+    public TicketDetailResponseDto findDetailById(Long ticketId) {
+        Long tenantId = currentUser.getTenantId();
+
+        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        List<TicketLineResponseDto> lines = ticketLineRepository
-            .findByTicketIdAndTicketNegocioIdOrderByCreatedAtAsc(ticket.getId(), negocioId)
-            .stream()
-            .map(this::toLineResponse)
-            .toList();
-
-        return toDetailResponse(ticket, lines);
+        return toDetailResponse(ticket, currentLines(ticket, tenantId));
     }
 
     public List<TicketResponseDto> findPaidTicketsByDateRange(LocalDate from, LocalDate to) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
         LocalDateTime fromDateTime = from.atStartOfDay();
         LocalDateTime toDateTime = to.atTime(23, 59, 59);
 
         return ticketRepository
                 .findByNegocioIdAndStatusAndPaidAtBetweenOrderByPaidAtDesc(
-                        negocioId,
+                        tenantId,
                         TicketStatus.PAID,
                         fromDateTime,
                         toDateTime
@@ -443,33 +545,27 @@ public class TicketService {
     }
 
     public List<UserSalesSummaryDto> getUserSalesSummary(LocalDate from, LocalDate to) {
-        Long negocioId = SecurityUtils.getNegocioId();
-
-        if (from == null || to == null) {
-            throw new IllegalStateException("Debes enviar ambas fechas");
-        }
-
-        if (from.isAfter(to)) {
-            throw new IllegalStateException("La fecha 'from' no puede ser mayor que 'to'");
-        }
+        Long tenantId = currentUser.getTenantId();
+        validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
         LocalDateTime toDateTime = to.atTime(23, 59, 59);
 
         return ticketRepository.findUserSalesSummaryByNegocioIdAndStatusAndPaidAtBetween(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
         );
     }
+
     public List<TicketResponseDto> findPaidTicketsFiltered(LocalDate from, LocalDate to) {
         if ((from == null && to != null) || (from != null && to == null)) {
-            throw new IllegalStateException("Debes enviar ambas fechas: from y to");
+            throw new BusinessRuleException("INVALID_DATE_RANGE", "Debes enviar ambas fechas: from y to");
         }
 
         if (from != null && from.isAfter(to)) {
-            throw new IllegalStateException("La fecha 'from' no puede ser mayor que 'to'");
+            throw new BusinessRuleException("INVALID_DATE_RANGE", "La fecha 'from' no puede ser mayor que 'to'");
         }
 
         if (from != null) {
@@ -480,50 +576,43 @@ public class TicketService {
     }
 
     public List<TicketResponseDto> findOpenTickets() {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
-        return ticketRepository.findByNegocioIdAndStatusOrderByCreatedAtDesc(negocioId, TicketStatus.OPEN)
+        return ticketRepository.findByNegocioIdAndStatusOrderByCreatedAtDesc(tenantId, TicketStatus.OPEN)
                 .stream()
                 .map(this::toResponse)
                 .toList();
     }
 
     public List<TicketResponseDto> findPaidTickets() {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
-        return ticketRepository.findByNegocioIdAndStatusOrderByPaidAtDesc(negocioId, TicketStatus.PAID)
+        return ticketRepository.findByNegocioIdAndStatusOrderByPaidAtDesc(tenantId, TicketStatus.PAID)
             .stream()
             .map(this::toResponse)
             .toList();
     }
 
     public List<TicketResponseDto> findCancelledTickets() {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
         return ticketRepository
-                .findByNegocioIdAndStatusOrderByUpdatedAtDesc(negocioId, TicketStatus.CANCELLED)
+                .findByNegocioIdAndStatusOrderByUpdatedAtDesc(tenantId, TicketStatus.CANCELLED)
                 .stream()
                 .map(this::toResponse)
                 .toList();
     }
 
     public BigDecimal getTotalSales(LocalDate from, LocalDate to) {
-        Long negocioId = SecurityUtils.getNegocioId();
-
-        if (from == null || to == null) {
-            throw new IllegalStateException("Debes enviar ambas fechas");
-        }
-
-        if (from.isAfter(to)) {
-            throw new IllegalStateException("La fecha 'from' no puede ser mayor que 'to'");
-        }
+        Long tenantId = currentUser.getTenantId();
+        validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
         LocalDateTime toDateTime = to.atTime(23, 59, 59);
 
         BigDecimal total = ticketRepository
                 .sumTotalByNegocioIdAndStatusAndPaidAtBetween(
-                        negocioId,
+                        tenantId,
                         TicketStatus.PAID,
                         fromDateTime,
                         toDateTime
@@ -533,28 +622,21 @@ public class TicketService {
     }
 
     public CashClosingSummaryDto getCashClosingSummary(LocalDate from, LocalDate to) {
-        Long negocioId = SecurityUtils.getNegocioId();
-
-        if (from == null || to == null) {
-            throw new IllegalStateException("Debes enviar ambas fechas");
-        }
-
-        if (from.isAfter(to)) {
-            throw new IllegalStateException("La fecha 'from' no puede ser mayor que 'to'");
-        }
+        Long tenantId = currentUser.getTenantId();
+        validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
         LocalDateTime toDateTime = to.atTime(23, 59, 59);
 
         BigDecimal totalSales = ticketRepository.sumTotalByNegocioIdAndStatusAndPaidAtBetween(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
         );
 
         BigDecimal cashTotal = ticketRepository.sumTotalByNegocioIdAndStatusAndPaymentMethodAndPaidAtBetween(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 PaymentMethod.CASH,
                 fromDateTime,
@@ -562,7 +644,7 @@ public class TicketService {
         );
 
         BigDecimal cardTotal = ticketRepository.sumTotalByNegocioIdAndStatusAndPaymentMethodAndPaidAtBetween(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 PaymentMethod.CARD,
                 fromDateTime,
@@ -570,14 +652,14 @@ public class TicketService {
         );
 
         Long paidTickets = ticketRepository.countByNegocioIdAndStatusAndPaidAtBetween(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
         );
 
         Long cancelledTickets = ticketRepository.countByNegocioIdAndStatusAndUpdatedAtBetween(
-                negocioId,
+                tenantId,
                 TicketStatus.CANCELLED,
                 fromDateTime,
                 toDateTime
@@ -592,72 +674,38 @@ public class TicketService {
         );
     }
 
-    private void recalculateTicketTotal(Ticket ticket) {
-        List<TicketLine> activeLines = getActiveLinesOrThrow(ticket);
-
-        BigDecimal total = activeLines.stream()
-                .map(TicketLine::getSubtotal)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        ticket.setTotal(total);
-    }
-
     public PageResponseDto<TicketResponseDto> findOpenTicketsPaged(int page, int size) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
         Pageable pageable = PageRequest.of(page, size);
 
         Page<Ticket> ticketPage = ticketRepository
             .findByNegocioIdAndStatusOrderByCreatedAtDesc(
-                negocioId,
+                tenantId,
                 TicketStatus.OPEN,
                 pageable
             );
 
-        List<TicketResponseDto> content = ticketPage.getContent()
-            .stream()
-            .map(this::toResponse)
-            .toList();
-
-        return new PageResponseDto<>(
-            content,
-            ticketPage.getNumber(),
-            ticketPage.getSize(),
-            ticketPage.getTotalElements(),
-            ticketPage.getTotalPages(),
-            ticketPage.isLast()
-        );
+        return toPageResponse(ticketPage);
     }
 
     public PageResponseDto<TicketResponseDto> findCancelledTicketsPaged(int page, int size) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
         Pageable pageable = PageRequest.of(page, size);
 
         Page<Ticket> ticketPage = ticketRepository
             .findByNegocioIdAndStatusOrderByUpdatedAtDesc(
-                negocioId,
+                tenantId,
                 TicketStatus.CANCELLED,
                 pageable
             );
 
-        List<TicketResponseDto> content = ticketPage.getContent()
-            .stream()
-            .map(this::toResponse)
-            .toList();
-
-        return new PageResponseDto<>(
-            content,
-            ticketPage.getNumber(),
-            ticketPage.getSize(),
-            ticketPage.getTotalElements(),
-            ticketPage.getTotalPages(),
-            ticketPage.isLast()
-        );
+        return toPageResponse(ticketPage);
     }
 
     public List<ProductSalesSummaryDto> getProductSalesSummary(LocalDate from, LocalDate to) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
         validateDateRange(from, to);
 
@@ -665,15 +713,16 @@ public class TicketService {
         LocalDateTime toDateTime = to.atTime(23, 59, 59);
 
         return ticketLineRepository.findProductSalesSummary(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 TicketLineStatus.ACTIVE,
                 fromDateTime,
                 toDateTime
         );
     }
+
     public List<DailySalesSummaryDto> getDailySalesSummary(LocalDate from, LocalDate to) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
         validateDateRange(from, to);
 
@@ -682,7 +731,7 @@ public class TicketService {
 
         List<Ticket> paidTickets = ticketRepository
                 .findByNegocioIdAndStatusAndPaidAtBetweenOrderByPaidAtDesc(
-                        negocioId,
+                        tenantId,
                         TicketStatus.PAID,
                         fromDateTime,
                         toDateTime
@@ -716,8 +765,9 @@ public class TicketService {
                 ))
                 .toList();
     }
+
     public AverageTicketSummaryDto getAverageTicketSummary(LocalDate from, LocalDate to) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
         validateDateRange(from, to);
 
@@ -725,14 +775,14 @@ public class TicketService {
         LocalDateTime toDateTime = to.atTime(23, 59, 59);
 
         BigDecimal totalSales = ticketRepository.sumTotalByNegocioIdAndStatusAndPaidAtBetween(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
         );
 
         Long ticketCount = ticketRepository.countByNegocioIdAndStatusAndPaidAtBetween(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
@@ -754,40 +804,28 @@ public class TicketService {
 
     @Transactional
     public TicketDetailResponseDto updateNotes(Long ticketId, UpdateTicketNotesRequestDto dto) {
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, negocioId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureTicketOpen(ticket);
+        ensureOpen(ticket);
 
         ticket.setNotes(normalizeNotes(dto.getNotes()));
         ticketRepository.save(ticket);
 
-        List<TicketLineResponseDto> lines = ticketLineRepository
-                .findByTicketIdAndTicketNegocioIdOrderByCreatedAtAsc(ticket.getId(), negocioId)
-                .stream()
-                .map(this::toLineResponse)
-                .toList();
-
-        return toDetailResponse(ticket, lines);
+        return toDetailResponse(ticket, currentLines(ticket, tenantId));
     }
 
-        public PageResponseDto<TicketResponseDto> findPaidTicketsPaged(
+    public PageResponseDto<TicketResponseDto> findPaidTicketsPaged(
         LocalDate from,
         LocalDate to,
         int page,
         int size
     ) {
-        if (from == null || to == null) {
-            throw new IllegalArgumentException("Las fechas from y to son obligatorias");
-        }
+        validateDateRange(from, to);
 
-        if (from.isAfter(to)) {
-            throw new IllegalArgumentException("La fecha from no puede ser posterior a to");
-        }
-
-        Long negocioId = SecurityUtils.getNegocioId();
+        Long tenantId = currentUser.getTenantId();
 
         LocalDateTime fromDateTime = from.atStartOfDay();
         LocalDateTime toDateTime = to.atTime(23, 59, 59);
@@ -796,13 +834,21 @@ public class TicketService {
 
         Page<Ticket> ticketPage = ticketRepository
             .findByNegocioIdAndStatusAndPaidAtBetweenOrderByPaidAtDesc(
-                negocioId,
+                tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime,
                 pageable
             );
 
+        return toPageResponse(ticketPage);
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers privados
+    // ------------------------------------------------------------------
+
+    private PageResponseDto<TicketResponseDto> toPageResponse(Page<Ticket> ticketPage) {
         List<TicketResponseDto> content = ticketPage.getContent()
             .stream()
             .map(this::toResponse)
@@ -818,57 +864,7 @@ public class TicketService {
         );
     }
 
-    @Transactional
-    public TicketDetailResponseDto changeMesa(Long ticketId, ChangeTicketMesaRequestDto dto) {
-        Long negocioId = SecurityUtils.getNegocioId();
-
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, negocioId)
-            .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
-
-        ensureTicketOpen(ticket);
-
-        Mesa nuevaMesa = mesaRepository.findByIdAndNegocioId(dto.getMesaId(), negocioId)
-                .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
-
-        if (!Boolean.TRUE.equals(nuevaMesa.getActiva())) {
-            throw new IllegalStateException("No se puede mover el ticket a una mesa inactiva");
-        }
-
-        if (ticket.getMesa() != null && ticket.getMesa().getId().equals(nuevaMesa.getId())) {
-            throw new IllegalStateException("El ticket ya está asignado a esa mesa");
-        }
-
-        Optional<Ticket> existingOpenTicket = ticketRepository
-                .findByMesaIdAndNegocioIdAndStatus(dto.getMesaId(), negocioId, TicketStatus.OPEN);
-
-        if (existingOpenTicket.isPresent() && !existingOpenTicket.get().getId().equals(ticket.getId())) {
-            throw new IllegalStateException("La mesa seleccionada ya tiene un ticket abierto");
-        }
-
-        Mesa mesaAnterior = ticket.getMesa();
-
-        ticket.setMesa(nuevaMesa);
-        ticketRepository.save(ticket);
-
-        if (mesaAnterior != null && !mesaAnterior.getId().equals(nuevaMesa.getId())) {
-            mesaAnterior.setStatus(MesaStatus.FREE);
-            mesaRepository.save(mesaAnterior);
-        }
-
-        // Ocupar nueva mesa
-        nuevaMesa.setStatus(MesaStatus.OCCUPIED);
-        mesaRepository.save(nuevaMesa);
-
-        List<TicketLineResponseDto> lines = ticketLineRepository
-                .findByTicketIdAndTicketNegocioIdOrderByCreatedAtAsc(ticket.getId(), negocioId)
-                .stream()
-                .map(this::toLineResponse)
-                .toList();
-
-        return toDetailResponse(ticket, lines);
-    }
-
-        private String buildGroupKey(Long productId, String notes) {
+    private String buildGroupKey(Long productId, String notes) {
         return productId + "::" + (notes == null ? "" : notes.trim().toLowerCase());
     }
 
@@ -891,23 +887,39 @@ public class TicketService {
                 .build();
     }
 
-    private void ensureTicketOpen(Ticket ticket) {
-        if (ticket.getStatus() != TicketStatus.OPEN) {
-            throw new IllegalStateException("Solo se pueden modificar tickets abiertos");
+    /**
+     * Validación central de estado (Fase 2.1): solo un ticket OPEN puede
+     * modificarse. Se centraliza aquí para no repetir reglas inconsistentes
+     * en cada operación.
+     */
+    private void ensureOpen(Ticket ticket) {
+        switch (ticket.getStatus()) {
+            case OPEN -> {
+                // ok
+            }
+            case PAID -> throw new BusinessRuleException("TICKET_ALREADY_PAID", "El ticket ya está pagado y no puede modificarse");
+            case CANCELLED -> throw new BusinessRuleException("TICKET_ALREADY_CANCELLED", "El ticket está cancelado y no puede modificarse");
         }
     }
 
-    private List<TicketLine> getActiveLinesOrThrow(Ticket ticket) {
+    /**
+     * Recalcula el total únicamente a partir de líneas activas. Nunca
+     * lanza excepción por falta de líneas: en ese caso el total es cero
+     * (Fase 2.2/2.10). La validación de "ticket vacío" vive solo en pay().
+     */
+    private void recalculateTicketTotal(Ticket ticket) {
         List<TicketLine> activeLines = ticketLineRepository.findByTicketIdAndStatusOrderByCreatedAtAsc(
                 ticket.getId(),
                 TicketLineStatus.ACTIVE
         );
 
-        if (activeLines.isEmpty()) {
-            throw new IllegalStateException("No se puede pagar un ticket vacío");
-        }
+        ticket.setTotal(sumActive(activeLines));
+    }
 
-        return activeLines;
+    private BigDecimal sumActive(List<TicketLine> activeLines) {
+        return activeLines.stream()
+                .map(TicketLine::getSubtotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private String normalizeNotes(String notes) {
@@ -998,16 +1010,17 @@ public class TicketService {
                 .createdAt(line.getCreatedAt())
                 .build();
     }
-    
+
     private void validateDateRange(LocalDate from, LocalDate to) {
         if (from == null || to == null) {
-            throw new IllegalStateException("Debes enviar ambas fechas");
+            throw new BusinessRuleException("INVALID_DATE_RANGE", "Debes enviar ambas fechas");
         }
 
         if (from.isAfter(to)) {
-            throw new IllegalStateException("La fecha 'from' no puede ser mayor que 'to'");
+            throw new BusinessRuleException("INVALID_DATE_RANGE", "La fecha 'from' no puede ser mayor que 'to'");
         }
     }
+
     private static class DailyAccumulator {
         private long ticketCount = 0L;
         private BigDecimal totalSales = BigDecimal.ZERO;

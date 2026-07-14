@@ -1,14 +1,18 @@
 package com.harbeyescala.api_apuntalo.dto;
 
 import com.harbeyescala.api_apuntalo.entity.enums.TicketLineStatus;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class TicketLineResponseDto {
 
     private Long id;

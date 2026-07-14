@@ -1,67 +1,65 @@
 package com.harbeyescala.api_apuntalo.security;
 
 import com.harbeyescala.api_apuntalo.exception.UnauthorizedException;
-import io.jsonwebtoken.Claims;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
-public class SecurityUtils {
+/**
+ * Utilidad estática de acceso rápido a la identidad autenticada.
+ * Mantenida por compatibilidad con el código existente; delega en
+ * {@link AuthenticatedUserPrincipal} obtenido del SecurityContext de
+ * Spring (nunca de las claims del JWT ni de un ThreadLocal propio).
+ * Para código nuevo, preferir inyectar {@link CurrentUser}.
+ */
+public final class SecurityUtils {
 
     private SecurityUtils() {
     }
 
-    public static Claims getClaims() {
+    private static AuthenticatedUserPrincipal getPrincipal() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
 
         if (auth == null || !auth.isAuthenticated()) {
             throw new UnauthorizedException("Usuario no autenticado");
         }
 
-        Object details = auth.getDetails();
-        if (!(details instanceof Claims claims)) {
+        if (!(auth.getPrincipal() instanceof AuthenticatedUserPrincipal principal)) {
             throw new UnauthorizedException("No se pudo obtener el contexto de seguridad");
         }
 
-        return claims;
+        return principal;
     }
 
     public static Long getUserId() {
-        Long userId = getClaims().get("userId", Long.class);
-        if (userId == null) {
-            throw new UnauthorizedException("Token inválido: userId no encontrado");
-        }
-        return userId;
+        return getPrincipal().userId();
     }
 
+    /**
+     * @deprecated usar {@link #getTenantId()}. Se mantiene por compatibilidad
+     * con el código existente que aún nombra el tenant como "negocio".
+     */
+    @Deprecated
     public static Long getNegocioId() {
-        Long negocioId = getClaims().get("negocioId", Long.class);
-        if (negocioId == null) {
-            throw new UnauthorizedException("Token inválido: negocioId no encontrado");
-        }
-        return negocioId;
+        return getTenantId();
+    }
+
+    public static Long getTenantId() {
+        return getPrincipal().tenantId();
     }
 
     public static String getRole() {
-        String role = getClaims().get("role", String.class);
-        if (role == null || role.isBlank()) {
-            throw new UnauthorizedException("Token inválido: role no encontrado");
-        }
-        return role;
+        return getPrincipal().role().name();
     }
+
     public static String getUsername() {
-        var authentication = SecurityContextHolder.getContext().getAuthentication();
-
-        if (authentication == null) {
-            throw new RuntimeException("No se pudo obtener el contexto de seguridad");
-        }
-
-        return authentication.getName();
+        return getPrincipal().username();
     }
+
     public static String getNegocioNombre() {
-        String negocioNombre = getClaims().get("negocioNombre", String.class);
-        if (negocioNombre == null || negocioNombre.isBlank()) {
-            throw new UnauthorizedException("Token inválido: negocioNombre no encontrado");
-        }
-        return negocioNombre;
+        return getPrincipal().tenantName();
+    }
+
+    public static boolean isSuperAdmin() {
+        return getPrincipal().isSuperAdmin();
     }
 }
