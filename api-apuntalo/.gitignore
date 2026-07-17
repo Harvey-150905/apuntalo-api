@@ -31,3 +31,9 @@ build/
 
 ### VS Code ###
 .vscode/
+*.log
+*.err
+*.pid
+*.tmp
+*.bak
+.verify-*

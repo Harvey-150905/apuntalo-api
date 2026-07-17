@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.math.RoundingMode;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.harbeyescala.api_apuntalo.dto.AddTicketLinesRequestDto;
+import com.harbeyescala.api_apuntalo.dto.ApplyLineDiscountRequestDto;
 import com.harbeyescala.api_apuntalo.dto.CashClosingSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.ChangeTicketMesaRequestDto;
 import com.harbeyescala.api_apuntalo.dto.PageResponseDto;
@@ -35,7 +37,10 @@ import com.harbeyescala.api_apuntalo.entity.Negocio;
 import com.harbeyescala.api_apuntalo.entity.Product;
 import com.harbeyescala.api_apuntalo.entity.Ticket;
 import com.harbeyescala.api_apuntalo.entity.TicketLine;
+import com.harbeyescala.api_apuntalo.entity.TicketNumberSequence;
 import com.harbeyescala.api_apuntalo.entity.User;
+import com.harbeyescala.api_apuntalo.entity.enums.AuditAction;
+import com.harbeyescala.api_apuntalo.entity.enums.AuditEntityType;
 import com.harbeyescala.api_apuntalo.entity.enums.MesaStatus;
 import com.harbeyescala.api_apuntalo.entity.enums.PaymentMethod;
 import com.harbeyescala.api_apuntalo.entity.enums.TicketLineStatus;
@@ -47,6 +52,7 @@ import com.harbeyescala.api_apuntalo.repository.MesaRepository;
 import com.harbeyescala.api_apuntalo.repository.NegocioRepository;
 import com.harbeyescala.api_apuntalo.repository.ProductRepository;
 import com.harbeyescala.api_apuntalo.repository.TicketLineRepository;
+import com.harbeyescala.api_apuntalo.repository.TicketNumberSequenceRepository;
 import com.harbeyescala.api_apuntalo.repository.TicketRepository;
 import com.harbeyescala.api_apuntalo.repository.UserRepository;
 import com.harbeyescala.api_apuntalo.security.CurrentUser;
@@ -61,6 +67,10 @@ public class TicketService {
     private final UserRepository userRepository;
     private final TicketLineRepository ticketLineRepository;
     private final ProductRepository productRepository;
+    private final TicketNumberSequenceRepository ticketNumberSequenceRepository;
+    private final TicketLinePricingService ticketLinePricingService;
+    private final AuditEventService auditEventService;
+    private final AuditFailureRecorder auditFailureRecorder;
     private final CurrentUser currentUser;
 
     public TicketService(
@@ -70,6 +80,10 @@ public class TicketService {
             UserRepository userRepository,
             TicketLineRepository ticketLineRepository,
             ProductRepository productRepository,
+            TicketNumberSequenceRepository ticketNumberSequenceRepository,
+            TicketLinePricingService ticketLinePricingService,
+            AuditEventService auditEventService,
+            AuditFailureRecorder auditFailureRecorder,
             CurrentUser currentUser
     ) {
         this.ticketRepository = ticketRepository;
@@ -78,6 +92,10 @@ public class TicketService {
         this.userRepository = userRepository;
         this.ticketLineRepository = ticketLineRepository;
         this.productRepository = productRepository;
+        this.ticketNumberSequenceRepository = ticketNumberSequenceRepository;
+        this.ticketLinePricingService = ticketLinePricingService;
+        this.auditEventService = auditEventService;
+        this.auditFailureRecorder = auditFailureRecorder;
         this.currentUser = currentUser;
     }
 
@@ -94,18 +112,23 @@ public class TicketService {
         Mesa mesa = mesaRepository.findByIdAndNegocioIdForUpdate(dto.getMesaId(), tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
-        if (!Boolean.TRUE.equals(mesa.getActiva())) {
-            throw new BusinessRuleException("MESA_INACTIVE", "La mesa está desactivada");
-        }
+        try {
+            if (!Boolean.TRUE.equals(mesa.getActiva())) {
+                throw new BusinessRuleException("MESA_INACTIVE", "La mesa está desactivada");
+            }
 
-        boolean alreadyOpen = ticketRepository.existsByMesaIdAndNegocioIdAndStatus(
-                mesa.getId(),
-                tenantId,
-                TicketStatus.OPEN
-        );
+            boolean alreadyOpen = ticketRepository.existsByMesaIdAndNegocioIdAndStatus(
+                    mesa.getId(),
+                    tenantId,
+                    TicketStatus.OPEN
+            );
 
-        if (alreadyOpen) {
-            throw new ConflictException("TABLE_ALREADY_OCCUPIED", "La mesa ya tiene un ticket abierto");
+            if (alreadyOpen) {
+                throw new ConflictException("TABLE_ALREADY_OCCUPIED", "La mesa ya tiene un ticket abierto");
+            }
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET, null, AuditAction.TICKET_CREATED, ex.getCode());
+            throw ex;
         }
 
         Negocio negocio = negocioRepository.findById(tenantId)
@@ -129,6 +152,14 @@ public class TicketService {
 
         mesa.setStatus(MesaStatus.OCCUPIED);
         mesaRepository.save(mesa);
+
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET,
+                savedTicket.getId(),
+                AuditAction.TICKET_CREATED,
+                null,
+                ticketSnapshot(savedTicket)
+        );
 
         return toResponse(savedTicket);
     }
@@ -162,71 +193,90 @@ public class TicketService {
         Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureOpen(ticket);
+        try {
+            ensureOpen(ticket);
 
-        Integer lastBatch = ticketLineRepository.findTopByTicketIdOrderByBatchNumberDesc(ticketId)
-                .map(TicketLine::getBatchNumber)
-                .orElse(0);
+            Integer lastBatch = ticketLineRepository.findTopByTicketIdOrderByBatchNumberDesc(ticketId)
+                    .map(TicketLine::getBatchNumber)
+                    .orElse(0);
 
-        int newBatch = lastBatch + 1;
+            int newBatch = lastBatch + 1;
 
-        Map<String, GroupedLine> grouped = new LinkedHashMap<>();
+            Map<String, GroupedLine> grouped = new LinkedHashMap<>();
 
-        for (TicketLineRequestDto lineDto : dto.getLines()) {
-            String normalizedNotes = normalizeNotes(lineDto.getNotes());
-            Product product = productRepository.findByIdAndNegocioId(lineDto.getProductId(), tenantId)
-                    .orElseThrow(() -> new ResourceNotFoundException(
-                            "Producto no encontrado: " + lineDto.getProductId()
-                    ));
+            for (TicketLineRequestDto lineDto : dto.getLines()) {
+                String normalizedNotes = normalizeNotes(lineDto.getNotes());
+                Product product = productRepository.findByIdAndNegocioId(lineDto.getProductId(), tenantId)
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "Producto no encontrado: " + lineDto.getProductId()
+                        ));
 
-            if (!Boolean.TRUE.equals(product.getActivo())) {
-                throw new BusinessRuleException("PRODUCT_INACTIVE", "El producto está inactivo: " + product.getName());
-            }
-
-            String key = buildGroupKey(product.getId(), normalizedNotes);
-
-           if (grouped.containsKey(key)) {
-                GroupedLine existing = grouped.get(key);
-                int newQuantity = existing.getQuantity() + lineDto.getQuantity();
-
-                if (newQuantity > 100) {
-                    throw new BusinessRuleException("INVALID_QUANTITY", "La cantidad total para un mismo producto no puede ser mayor que 100");
+                if (!Boolean.TRUE.equals(product.getActivo())) {
+                    throw new BusinessRuleException("PRODUCT_INACTIVE", "El producto está inactivo: " + product.getName());
                 }
 
-                existing.setQuantity(newQuantity);
-            } else {
-                grouped.put(key, new GroupedLine(
-                        product.getId(),
-                        product.getName(),
-                        product.getPrice(),
-                        lineDto.getQuantity(),
-                        normalizedNotes
-                ));
+                String key = buildGroupKey(product.getId(), normalizedNotes);
+
+               if (grouped.containsKey(key)) {
+                    GroupedLine existing = grouped.get(key);
+                    int newQuantity = existing.getQuantity() + lineDto.getQuantity();
+
+                    if (newQuantity > 100) {
+                        throw new BusinessRuleException("INVALID_QUANTITY", "La cantidad total para un mismo producto no puede ser mayor que 100");
+                    }
+
+                    existing.setQuantity(newQuantity);
+                } else {
+                    grouped.put(key, new GroupedLine(
+                            product.getId(),
+                            product.getName(),
+                            product.getPrice(),
+                            lineDto.getQuantity(),
+                            normalizedNotes
+                    ));
+                }
             }
-        }
 
-        for (GroupedLine groupedLine : grouped.values()) {
-            BigDecimal subtotal = groupedLine.getUnitPrice()
-                    .multiply(BigDecimal.valueOf(groupedLine.getQuantity()));
+            for (GroupedLine groupedLine : grouped.values()) {
+                BigDecimal subtotal = groupedLine.getUnitPrice()
+                        .multiply(BigDecimal.valueOf(groupedLine.getQuantity()));
 
-            TicketLine ticketLine = TicketLine.builder()
-                    .ticket(ticket)
-                    .productId(groupedLine.getProductId())
-                    .productNameSnapshot(groupedLine.getProductName())
-                    .unitPriceSnapshot(groupedLine.getUnitPrice())
-                    .quantity(groupedLine.getQuantity())
-                    .subtotal(subtotal)
-                    .batchNumber(newBatch)
-                    .status(TicketLineStatus.ACTIVE)
-                    .notes(groupedLine.getNotes())
-                    .build();
+                TicketLine ticketLine = TicketLine.builder()
+                        .ticket(ticket)
+                        .productId(groupedLine.getProductId())
+                        .productNameSnapshot(groupedLine.getProductName())
+                        .unitPriceSnapshot(groupedLine.getUnitPrice())
+                        .quantity(groupedLine.getQuantity())
+                        .subtotal(subtotal)
+                        .subtotalBeforeDiscount(subtotal)
+                        .discountPercentage(0)
+                        .discountAmount(BigDecimal.ZERO)
+                        .batchNumber(newBatch)
+                        .status(TicketLineStatus.ACTIVE)
+                        .notes(groupedLine.getNotes())
+                        .build();
 
-            ticketLineRepository.save(ticketLine);
+                ticketLineRepository.save(ticketLine);
+            }
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET, ticketId, AuditAction.TICKET_LINES_ADDED, ex.getCode());
+            throw ex;
         }
 
         recalculateTicketTotal(ticket);
 
-        return toResponse(ticketRepository.save(ticket));
+        Ticket savedTicket = ticketRepository.save(ticket);
+
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET,
+                ticket.getId(),
+                AuditAction.TICKET_LINES_ADDED,
+                null,
+                ticketSnapshot(savedTicket),
+                Map.of("addedLineGroups", dto.getLines().size())
+        );
+
+        return toResponse(savedTicket);
     }
 
     // ------------------------------------------------------------------
@@ -244,22 +294,30 @@ public class TicketService {
         Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureOpen(ticket);
+        Map<String, Object> previousState = ticketSnapshot(ticket);
+        List<TicketLine> activeLines;
 
-        List<TicketLine> activeLines = ticketLineRepository.findByTicketIdAndStatusOrderByCreatedAtAsc(
-                ticket.getId(),
-                TicketLineStatus.ACTIVE
-        );
+        try {
+            ensureOpen(ticket);
 
-        if (activeLines.isEmpty()) {
-            throw new BusinessRuleException("TICKET_EMPTY", "No se puede pagar un ticket sin líneas activas");
-        }
+            activeLines = ticketLineRepository.findByTicketIdAndStatusOrderByCreatedAtAsc(
+                    ticket.getId(),
+                    TicketLineStatus.ACTIVE
+            );
 
-        BigDecimal total = sumActive(activeLines);
-        ticket.setTotal(total);
+            if (activeLines.isEmpty()) {
+                throw new BusinessRuleException("TICKET_EMPTY", "No se puede pagar un ticket sin líneas activas");
+            }
 
-        if (total.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessRuleException("TICKET_EMPTY", "El total del ticket debe ser mayor que cero");
+            BigDecimal total = sumActive(activeLines);
+            ticket.setTotal(total);
+
+            if (total.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessRuleException("TICKET_EMPTY", "El total del ticket debe ser mayor que cero");
+            }
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET, ticketId, AuditAction.TICKET_PAID, ex.getCode());
+            throw ex;
         }
 
         User paidBy = userRepository.findByIdAndNegocioId(userId, tenantId)
@@ -270,6 +328,12 @@ public class TicketService {
         ticket.setPaidBy(paidBy);
         ticket.setPaymentMethod(dto.getPaymentMethod());
 
+        // Numeración comercial bajo bloqueo (Fase 5.1): la secuencia por
+        // negocio se bloquea con PESSIMISTIC_WRITE y se incrementa de forma
+        // atómica junto al resto del pago, dentro de la misma transacción
+        // que ya tiene el ticket bloqueado.
+        Long assignedNumber = assignCommercialNumber(ticket, tenantId);
+
         ticketRepository.save(ticket);
 
         freeMesa(ticket, tenantId);
@@ -278,7 +342,61 @@ public class TicketService {
                 .map(this::toLineResponse)
                 .toList();
 
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET,
+                ticket.getId(),
+                AuditAction.TICKET_PAID,
+                previousState,
+                ticketSnapshot(ticket)
+        );
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET,
+                ticket.getId(),
+                AuditAction.COMMERCIAL_NUMBER_ASSIGNED,
+                null,
+                Map.of(
+                        "commercialNumber", assignedNumber,
+                        "commercialNumberFormatted", formatCommercialNumber(assignedNumber)
+                )
+        );
+
         return toDetailResponse(ticket, lines);
+    }
+
+    /**
+     * Asigna el próximo número comercial del negocio bajo bloqueo pesimista
+     * (Fase 5.1). Si la fila de secuencia todavía no existe para el negocio
+     * (por ejemplo, negocios creados antes de esta fase que no pasaron por
+     * la migración) se crea de forma perezosa, tolerando la carrera con
+     * otra transacción que intente lo mismo.
+     */
+    private Long assignCommercialNumber(Ticket ticket, Long tenantId) {
+        TicketNumberSequence sequence = ticketNumberSequenceRepository.findByNegocioIdForUpdate(tenantId)
+                .orElseGet(() -> createSequence(tenantId));
+
+        Long assignedNumber = sequence.getNextNumber();
+        sequence.setNextNumber(assignedNumber + 1);
+        ticketNumberSequenceRepository.save(sequence);
+
+        ticket.setCommercialNumber(assignedNumber);
+        return assignedNumber;
+    }
+
+    private TicketNumberSequence createSequence(Long tenantId) {
+        try {
+            return ticketNumberSequenceRepository.saveAndFlush(
+                    TicketNumberSequence.builder()
+                            .negocioId(tenantId)
+                            .nextNumber(1L)
+                            .version(0L)
+                            .build()
+            );
+        } catch (DataIntegrityViolationException race) {
+            return ticketNumberSequenceRepository.findByNegocioIdForUpdate(tenantId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "No se pudo inicializar la secuencia de numeración del negocio " + tenantId
+                    ));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -292,14 +410,21 @@ public class TicketService {
         Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureOpen(ticket);
+        TicketLine line;
 
-        TicketLine line = ticketLineRepository
-                .findByIdAndTicketIdAndTicketNegocioId(lineId, ticketId, tenantId)
-                .orElseThrow(() -> new ResourceNotFoundException("Línea no encontrada"));
+        try {
+            ensureOpen(ticket);
 
-        if (line.getStatus() == TicketLineStatus.CANCELLED) {
-            throw new BusinessRuleException("LINE_ALREADY_CANCELLED", "La línea ya está cancelada");
+            line = ticketLineRepository
+                    .findByIdAndTicketIdAndTicketNegocioId(lineId, ticketId, tenantId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Línea no encontrada"));
+
+            if (line.getStatus() == TicketLineStatus.CANCELLED) {
+                throw new BusinessRuleException("LINE_ALREADY_CANCELLED", "La línea ya está cancelada");
+            }
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET_LINE, lineId, AuditAction.TICKET_LINE_CANCELLED, ex.getCode());
+            throw ex;
         }
 
         line.setStatus(TicketLineStatus.CANCELLED);
@@ -316,6 +441,15 @@ public class TicketService {
                 .map(this::toLineResponse)
                 .toList();
 
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET_LINE,
+                line.getId(),
+                AuditAction.TICKET_LINE_CANCELLED,
+                Map.of("status", TicketLineStatus.ACTIVE, "subtotal", line.getSubtotal()),
+                Map.of("status", TicketLineStatus.CANCELLED),
+                Map.of("ticketId", ticketId)
+        );
+
         return toDetailResponse(ticket, lines);
     }
 
@@ -326,21 +460,28 @@ public class TicketService {
         Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureOpen(ticket);
+        List<TicketLine> activeLines;
 
-        List<TicketLine> lines = ticketLineRepository
-            .findByTicketIdAndBatchNumberAndTicketNegocioId(ticketId, batchNumber, tenantId);
+        try {
+            ensureOpen(ticket);
 
-        if (lines.isEmpty()) {
-            throw new ResourceNotFoundException("Batch no encontrado");
-        }
+            List<TicketLine> lines = ticketLineRepository
+                .findByTicketIdAndBatchNumberAndTicketNegocioId(ticketId, batchNumber, tenantId);
 
-        List<TicketLine> activeLines = lines.stream()
-                .filter(line -> line.getStatus() == TicketLineStatus.ACTIVE)
-                .toList();
+            if (lines.isEmpty()) {
+                throw new ResourceNotFoundException("Batch no encontrado");
+            }
 
-        if (activeLines.isEmpty()) {
-            throw new BusinessRuleException("BATCH_ALREADY_CANCELLED", "El batch ya no tiene líneas activas");
+            activeLines = lines.stream()
+                    .filter(line -> line.getStatus() == TicketLineStatus.ACTIVE)
+                    .toList();
+
+            if (activeLines.isEmpty()) {
+                throw new BusinessRuleException("BATCH_ALREADY_CANCELLED", "El batch ya no tiene líneas activas");
+            }
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET, ticketId, AuditAction.TICKET_BATCH_CANCELLED, ex.getCode());
+            throw ex;
         }
 
         activeLines.forEach(line -> line.setStatus(TicketLineStatus.CANCELLED));
@@ -355,6 +496,15 @@ public class TicketService {
                 .map(this::toLineResponse)
                 .toList();
 
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET,
+                ticket.getId(),
+                AuditAction.TICKET_BATCH_CANCELLED,
+                null,
+                Map.of("total", ticket.getTotal()),
+                Map.of("batchNumber", batchNumber, "cancelledLines", activeLines.size())
+        );
+
         return toDetailResponse(ticket, allLines);
     }
 
@@ -366,7 +516,12 @@ public class TicketService {
         Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureOpen(ticket);
+        try {
+            ensureOpen(ticket);
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET, ticketId, AuditAction.TICKET_CANCELLED, ex.getCode());
+            throw ex;
+        }
 
         List<TicketLine> lines = ticketLineRepository
             .findByTicketIdAndTicketNegocioIdOrderByCreatedAtAsc(ticket.getId(), tenantId);
@@ -393,6 +548,14 @@ public class TicketService {
                 .map(this::toLineResponse)
                 .toList();
 
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET,
+                ticket.getId(),
+                AuditAction.TICKET_CANCELLED,
+                null,
+                ticketSnapshot(ticket)
+        );
+
         return toDetailResponse(ticket, responseLines);
     }
 
@@ -418,7 +581,12 @@ public class TicketService {
         Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
             .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
-        ensureOpen(ticket);
+        try {
+            ensureOpen(ticket);
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET, ticketId, AuditAction.TICKET_TABLE_CHANGED, ex.getCode());
+            throw ex;
+        }
 
         Long originMesaId = ticket.getMesa().getId();
         Long destinationMesaId = dto.getMesaId();
@@ -441,15 +609,20 @@ public class TicketService {
         Mesa origen = firstId.equals(originMesaId) ? firstMesa : secondMesa;
         Mesa destino = firstId.equals(destinationMesaId) ? firstMesa : secondMesa;
 
-        if (!Boolean.TRUE.equals(destino.getActiva())) {
-            throw new BusinessRuleException("MESA_INACTIVE", "No se puede mover el ticket a una mesa inactiva");
-        }
+        try {
+            if (!Boolean.TRUE.equals(destino.getActiva())) {
+                throw new BusinessRuleException("MESA_INACTIVE", "No se puede mover el ticket a una mesa inactiva");
+            }
 
-        Optional<Ticket> existingOpenTicket = ticketRepository
-                .findByMesaIdAndNegocioIdAndStatus(destino.getId(), tenantId, TicketStatus.OPEN);
+            Optional<Ticket> existingOpenTicket = ticketRepository
+                    .findByMesaIdAndNegocioIdAndStatus(destino.getId(), tenantId, TicketStatus.OPEN);
 
-        if (existingOpenTicket.isPresent() && !existingOpenTicket.get().getId().equals(ticket.getId())) {
-            throw new ConflictException("TABLE_ALREADY_OCCUPIED", "La mesa seleccionada ya tiene un ticket abierto");
+            if (existingOpenTicket.isPresent() && !existingOpenTicket.get().getId().equals(ticket.getId())) {
+                throw new ConflictException("TABLE_ALREADY_OCCUPIED", "La mesa seleccionada ya tiene un ticket abierto");
+            }
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET, ticketId, AuditAction.TICKET_TABLE_CHANGED, ex.getCode());
+            throw ex;
         }
 
         ticket.setMesa(destino);
@@ -460,6 +633,107 @@ public class TicketService {
 
         destino.setStatus(MesaStatus.OCCUPIED);
         mesaRepository.save(destino);
+
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET,
+                ticket.getId(),
+                AuditAction.TICKET_TABLE_CHANGED,
+                Map.of("mesaId", originMesaId),
+                Map.of("mesaId", destinationMesaId)
+        );
+
+        return toDetailResponse(ticket, currentLines(ticket, tenantId));
+    }
+
+    // ------------------------------------------------------------------
+    // Descuentos por línea (Fase 5.1)
+    // ------------------------------------------------------------------
+
+    @Transactional
+    public TicketDetailResponseDto applyLineDiscount(Long ticketId, Long lineId, ApplyLineDiscountRequestDto dto) {
+        Long tenantId = currentUser.getTenantId();
+        Long userId = currentUser.getUserId();
+
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
+
+        TicketLine line;
+        Integer previousPercentage;
+        BigDecimal previousSubtotal;
+        BigDecimal previousSubtotalBeforeDiscount;
+        BigDecimal previousDiscountAmount;
+
+        try {
+            ensureOpen(ticket);
+
+            line = ticketLineRepository.findByIdAndTicketIdAndTicketNegocioId(lineId, ticketId, tenantId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Línea no encontrada"));
+
+            if (line.getStatus() != TicketLineStatus.ACTIVE) {
+                throw new BusinessRuleException("LINE_NOT_ACTIVE", "Solo se puede aplicar descuento a una línea activa");
+            }
+
+            previousPercentage = line.getDiscountPercentage();
+            previousSubtotal = line.getSubtotal();
+            previousSubtotalBeforeDiscount = line.getSubtotalBeforeDiscount();
+            previousDiscountAmount = line.getDiscountAmount();
+
+            TicketLinePricingService.LineDiscountCalculation calculation = ticketLinePricingService.calculate(
+                    line.getUnitPriceSnapshot(),
+                    line.getQuantity(),
+                    dto.getDiscountPercentage()
+            );
+
+            line.setSubtotalBeforeDiscount(calculation.subtotalBeforeDiscount());
+            line.setDiscountPercentage(dto.getDiscountPercentage());
+            line.setDiscountAmount(calculation.discountAmount());
+            line.setSubtotal(calculation.subtotal());
+
+            if (ticketLinePricingService.isNoDiscount(dto.getDiscountPercentage())) {
+                line.setDiscountAppliedBy(null);
+                line.setDiscountAppliedAt(null);
+            } else {
+                User actor = userRepository.findByIdAndNegocioId(userId, tenantId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
+                line.setDiscountAppliedBy(actor);
+                line.setDiscountAppliedAt(LocalDateTime.now());
+            }
+        } catch (BusinessRuleException | ConflictException ex) {
+            auditFailureSafely(AuditEntityType.TICKET_LINE, lineId, AuditAction.LINE_DISCOUNT_APPLIED, ex.getCode());
+            throw ex;
+        }
+
+        ticketLineRepository.save(line);
+
+        // Recálculo del total del ticket a partir de las líneas ACTIVE
+        // (Fase 5.1): el descuento de una línea nunca invalida el ticket.
+        recalculateTicketTotal(ticket);
+        ticketRepository.save(ticket);
+
+        boolean wasDiscounted = previousPercentage != null && previousPercentage != 0;
+        boolean isNowDiscounted = !ticketLinePricingService.isNoDiscount(dto.getDiscountPercentage());
+        AuditAction action = (!isNowDiscounted && wasDiscounted)
+                ? AuditAction.LINE_DISCOUNT_REMOVED
+                : AuditAction.LINE_DISCOUNT_APPLIED;
+
+        auditEventService.recordSuccess(
+                AuditEntityType.TICKET_LINE,
+                line.getId(),
+                action,
+                Map.of(
+                        "discountPercentage", previousPercentage,
+                        "subtotalBeforeDiscount", previousSubtotalBeforeDiscount,
+                        "discountAmount", previousDiscountAmount,
+                        "subtotal", previousSubtotal
+                ),
+                Map.of(
+                        "discountPercentage", line.getDiscountPercentage(),
+                        "subtotalBeforeDiscount", line.getSubtotalBeforeDiscount(),
+                        "discountAmount", line.getDiscountAmount(),
+                        "subtotal", line.getSubtotal()
+                ),
+                Map.of("ticketId", ticketId)
+        );
 
         return toDetailResponse(ticket, currentLines(ticket, tenantId));
     }
@@ -873,6 +1147,8 @@ public class TicketService {
                 .id(ticket.getId())
                 .status(ticket.getStatus())
                 .total(ticket.getTotal())
+                .commercialNumber(ticket.getCommercialNumber())
+                .commercialNumberFormatted(formatCommercialNumber(ticket.getCommercialNumber()))
                 .notes(ticket.getNotes())
                 .createdAt(ticket.getCreatedAt())
                 .updatedAt(ticket.getUpdatedAt())
@@ -981,6 +1257,8 @@ public class TicketService {
                 .id(ticket.getId())
                 .status(ticket.getStatus())
                 .total(ticket.getTotal())
+                .commercialNumber(ticket.getCommercialNumber())
+                .commercialNumberFormatted(formatCommercialNumber(ticket.getCommercialNumber()))
                 .notes(ticket.getNotes())
                 .createdAt(ticket.getCreatedAt())
                 .updatedAt(ticket.getUpdatedAt())
@@ -997,6 +1275,8 @@ public class TicketService {
     }
 
     private TicketLineResponseDto toLineResponse(TicketLine line) {
+        User discountAppliedBy = line.getDiscountAppliedBy();
+
         return TicketLineResponseDto.builder()
                 .id(line.getId())
                 .productId(line.getProductId())
@@ -1004,11 +1284,57 @@ public class TicketService {
                 .unitPriceSnapshot(line.getUnitPriceSnapshot())
                 .quantity(line.getQuantity())
                 .subtotal(line.getSubtotal())
+                .subtotalBeforeDiscount(line.getSubtotalBeforeDiscount())
+                .discountPercentage(line.getDiscountPercentage())
+                .discountAmount(line.getDiscountAmount())
+                .discountAppliedById(discountAppliedBy != null ? discountAppliedBy.getId() : null)
+                .discountAppliedByUsername(discountAppliedBy != null ? discountAppliedBy.getUsername() : null)
+                .discountAppliedAt(line.getDiscountAppliedAt())
                 .batchNumber(line.getBatchNumber())
                 .status(line.getStatus())
                 .notes(line.getNotes())
                 .createdAt(line.getCreatedAt())
                 .build();
+    }
+
+    /**
+     * Formato de exhibición del número comercial (Fase 5.1): 6 dígitos con
+     * ceros a la izquierda. Nulo mientras el ticket no está pagado.
+     */
+    private String formatCommercialNumber(Long commercialNumber) {
+        if (commercialNumber == null) {
+            return null;
+        }
+
+        return String.format("%06d", commercialNumber);
+    }
+
+    /**
+     * Snapshot seguro del ticket para auditoría (Fase 5.3): solo campos
+     * simples, nunca la entidad completa ni sus relaciones perezosas
+     * completas.
+     */
+    private Map<String, Object> ticketSnapshot(Ticket ticket) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("status", ticket.getStatus());
+        snapshot.put("total", ticket.getTotal());
+        snapshot.put("commercialNumber", ticket.getCommercialNumber());
+        snapshot.put("mesaId", ticket.getMesa() != null ? ticket.getMesa().getId() : null);
+        snapshot.put("paymentMethod", ticket.getPaymentMethod());
+        return snapshot;
+    }
+
+    /**
+     * Registra un fallo funcional en una transacción independiente
+     * (Fase 5.3) sin permitir que un problema en la propia auditoría
+     * oculte la excepción de negocio original.
+     */
+    private void auditFailureSafely(AuditEntityType entityType, Long entityId, AuditAction action, String errorCode) {
+        try {
+            auditFailureRecorder.recordFailure(entityType, entityId, action, errorCode, null);
+        } catch (RuntimeException ignored) {
+            // La auditoría de fallos nunca debe ocultar el error funcional original.
+        }
     }
 
     private void validateDateRange(LocalDate from, LocalDate to) {

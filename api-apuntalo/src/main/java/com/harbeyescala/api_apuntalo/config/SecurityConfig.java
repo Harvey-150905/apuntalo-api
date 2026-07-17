@@ -1,5 +1,6 @@
 package com.harbeyescala.api_apuntalo.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -15,16 +16,26 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.Arrays;
 import java.util.List;
 
 @Configuration
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtFilter;
+    private final AuditRequestContextFilter auditRequestContextFilter;
     private final ObjectMapper objectMapper;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtFilter, ObjectMapper objectMapper) {
+    @Value("${app.cors.allowed-origin-patterns:http://localhost:[*],http://127.0.0.1:[*],http://192.168.1.185:[*]}")
+    private String allowedOriginPatterns;
+
+    public SecurityConfig(
+            JwtAuthenticationFilter jwtFilter,
+            AuditRequestContextFilter auditRequestContextFilter,
+            ObjectMapper objectMapper
+    ) {
         this.jwtFilter = jwtFilter;
+        this.auditRequestContextFilter = auditRequestContextFilter;
         this.objectMapper = objectMapper;
     }
 
@@ -125,6 +136,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.PATCH, "/api/tickets/*/lines/*/cancel")
                     .hasAnyRole("SUPER_ADMIN", "ADMIN", "CAMARERO")
 
+                .requestMatchers(HttpMethod.PATCH, "/api/tickets/*/lines/*/discount")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN", "CAMARERO")
+
                 .requestMatchers(HttpMethod.PATCH, "/api/tickets/*/batches/*/cancel")
                     .hasAnyRole("SUPER_ADMIN", "ADMIN", "CAMARERO")
 
@@ -135,9 +149,17 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/tickets/{ticketId}")
                     .hasAnyRole("SUPER_ADMIN", "ADMIN", "CAMARERO")
 
+                // AUDITORÍA (Fase 5.3): solo ADMIN / SUPER_ADMIN
+                .requestMatchers(HttpMethod.GET, "/api/admin/audit-events")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN")
+
                 .anyRequest().authenticated()
             )
-            .addFilterBefore(jwtFilter, org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
+            .addFilterBefore(jwtFilter, org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
+            // Envuelve el resto de la cadena (incluido jwtFilter) para que el
+            // requestId/idempotencyKey estén disponibles en toda la petición,
+            // se autentique o no (Fase 5.3).
+            .addFilterBefore(auditRequestContextFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }
@@ -145,13 +167,12 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of(
-            "http://localhost:[*]",
-            "http://127.0.0.1:[*]",
-            "http://192.168.1.185:[*]"
-        ));
+        configuration.setAllowedOriginPatterns(Arrays.stream(allowedOriginPatterns.split(","))
+                .map(String::trim)
+                .filter(pattern -> !pattern.isEmpty())
+                .toList());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept", "Idempotency-Key"));
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept", "Idempotency-Key", "X-Request-Id"));
         configuration.setExposedHeaders(List.of("Idempotency-Replayed"));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

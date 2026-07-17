@@ -46,6 +46,30 @@ public class TicketLine {
     @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal subtotal;
 
+    /**
+     * Descuentos por línea (Fase 5.1). {@code subtotalBeforeDiscount} es el
+     * importe bruto (unitPrice * quantity); {@code subtotal} queda siempre
+     * como {@code subtotalBeforeDiscount - discountAmount}. Sin descuento
+     * (0%) ambos coinciden y el actor/fecha quedan nulos.
+     */
+    @Column(name = "subtotal_before_discount", nullable = false, precision = 10, scale = 2)
+    private BigDecimal subtotalBeforeDiscount;
+
+    @Column(name = "discount_percentage", nullable = false)
+    @Builder.Default
+    private Integer discountPercentage = 0;
+
+    @Column(name = "discount_amount", nullable = false, precision = 10, scale = 2)
+    @Builder.Default
+    private BigDecimal discountAmount = BigDecimal.ZERO;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "discount_applied_by")
+    private User discountAppliedBy;
+
+    @Column(name = "discount_applied_at")
+    private LocalDateTime discountAppliedAt;
+
     @Column(name = "batch_number", nullable = false)
     private Integer batchNumber;
 

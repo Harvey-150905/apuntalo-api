@@ -20,6 +20,8 @@ public class TicketDetailResponseDto {
     private Long id;
     private TicketStatus status;
     private BigDecimal total;
+    private Long commercialNumber;
+    private String commercialNumberFormatted;
     private String notes;
 
     private LocalDateTime createdAt;

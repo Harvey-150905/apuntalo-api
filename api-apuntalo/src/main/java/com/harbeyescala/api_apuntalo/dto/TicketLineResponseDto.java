@@ -21,6 +21,14 @@ public class TicketLineResponseDto {
     private BigDecimal unitPriceSnapshot;
     private Integer quantity;
     private BigDecimal subtotal;
+
+    private BigDecimal subtotalBeforeDiscount;
+    private Integer discountPercentage;
+    private BigDecimal discountAmount;
+    private Long discountAppliedById;
+    private String discountAppliedByUsername;
+    private LocalDateTime discountAppliedAt;
+
     private Integer batchNumber;
     private TicketLineStatus status;
     private String notes;

@@ -44,6 +44,14 @@ public class Ticket {
     @Builder.Default
     private BigDecimal total = BigDecimal.ZERO;
 
+    /**
+     * Número comercial correlativo por negocio (Fase 5.1), asignado bajo
+     * bloqueo al pagar mediante {@link TicketNumberSequence}. Nulo hasta que
+     * el ticket se paga; nunca se reasigna ni se reutiliza.
+     */
+    @Column(name = "commercial_number")
+    private Long commercialNumber;
+
     @Column(length = 1000)
     private String notes;
 

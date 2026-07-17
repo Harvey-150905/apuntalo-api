@@ -7,7 +7,7 @@ import lombok.Getter;
  * por otra petición, idempotency-key en uso). Se traduce a 409.
  */
 @Getter
-public class ConflictException extends RuntimeException {
+public class ConflictException extends RuntimeException implements FunctionalException {
 
     private final String code;
 

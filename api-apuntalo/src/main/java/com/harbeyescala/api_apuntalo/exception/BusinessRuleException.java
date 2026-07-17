@@ -7,7 +7,7 @@ import lombok.Getter;
  * ticket vacío, modificar un ticket no abierto). Se traduce a 422.
  */
 @Getter
-public class BusinessRuleException extends RuntimeException {
+public class BusinessRuleException extends RuntimeException implements FunctionalException {
 
     private final String code;
 

@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.harbeyescala.api_apuntalo.dto.AddTicketLinesRequestDto;
+import com.harbeyescala.api_apuntalo.dto.ApplyLineDiscountRequestDto;
 import com.harbeyescala.api_apuntalo.dto.CashClosingSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.ChangeTicketMesaRequestDto;
 import com.harbeyescala.api_apuntalo.dto.IdempotentOutcome;
@@ -149,6 +150,26 @@ public class TicketController {
                 HttpStatus.OK.value(),
                 TicketDetailResponseDto.class,
                 () -> ticketService.cancelTicket(ticketId)
+        );
+
+        return toResponseEntity(outcome);
+    }
+
+    @PatchMapping("/{ticketId}/lines/{lineId}/discount")
+    public ResponseEntity<TicketDetailResponseDto> applyLineDiscount(
+            @PathVariable Long ticketId,
+            @PathVariable Long lineId,
+            @Valid @RequestBody ApplyLineDiscountRequestDto dto,
+            @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey
+    ) {
+        IdempotentOutcome<TicketDetailResponseDto> outcome = idempotencyService.execute(
+                "APPLY_LINE_DISCOUNT",
+                "TICKET",
+                idempotencyKey,
+                Map.of("ticketId", ticketId, "lineId", lineId, "body", dto),
+                HttpStatus.OK.value(),
+                TicketDetailResponseDto.class,
+                () -> ticketService.applyLineDiscount(ticketId, lineId, dto)
         );
 
         return toResponseEntity(outcome);
