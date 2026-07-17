@@ -7,12 +7,15 @@ import com.harbeyescala.api_apuntalo.dto.PageResponseDto;
 import com.harbeyescala.api_apuntalo.entity.AuditEvent;
 import com.harbeyescala.api_apuntalo.entity.enums.AuditAction;
 import com.harbeyescala.api_apuntalo.entity.enums.AuditEntityType;
+import com.harbeyescala.api_apuntalo.exception.BadRequestException;
 import com.harbeyescala.api_apuntalo.repository.AuditEventRepository;
 import com.harbeyescala.api_apuntalo.security.AuditRequestContext;
 import com.harbeyescala.api_apuntalo.security.CurrentUser;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -90,18 +93,44 @@ public class AuditEventService {
             AuditEntityType entityType,
             Long entityId,
             AuditAction action,
+            Long userId,
             Boolean success,
             LocalDateTime from,
             LocalDateTime to,
             int page,
             int size
     ) {
-        Long tenantId = currentUser.getTenantId();
-        Pageable pageable = PageRequest.of(page, size);
+        validatePagination(page, size);
 
-        Page<AuditEvent> result = repository.findFiltered(
-                tenantId, entityType, entityId, action, success, from, to, pageable
-        );
+        Long tenantId = currentUser.getTenantId();
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "occurredAt"));
+
+        Specification<AuditEvent> specification = (root, query, criteriaBuilder) ->
+                criteriaBuilder.equal(root.get("negocioId"), tenantId);
+
+        if (entityType != null) {
+            specification = specification.and((root, query, cb) -> cb.equal(root.get("entityType"), entityType));
+        }
+        if (entityId != null) {
+            specification = specification.and((root, query, cb) -> cb.equal(root.get("entityId"), entityId));
+        }
+        if (action != null) {
+            specification = specification.and((root, query, cb) -> cb.equal(root.get("action"), action));
+        }
+        if (userId != null) {
+            specification = specification.and((root, query, cb) -> cb.equal(root.get("userId"), userId));
+        }
+        if (success != null) {
+            specification = specification.and((root, query, cb) -> cb.equal(root.get("success"), success));
+        }
+        if (from != null) {
+            specification = specification.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("occurredAt"), from));
+        }
+        if (to != null) {
+            specification = specification.and((root, query, cb) -> cb.lessThanOrEqualTo(root.get("occurredAt"), to));
+        }
+
+        Page<AuditEvent> result = repository.findAll(specification, pageable);
 
         List<AuditEventResponseDto> content = result.getContent().stream()
                 .map(this::toResponseDto)
@@ -115,6 +144,15 @@ public class AuditEventService {
                 result.getTotalPages(),
                 result.isLast()
         );
+    }
+
+    private void validatePagination(int page, int size) {
+        if (page < 0) {
+            throw new BadRequestException("INVALID_PAGE", "La página no puede ser negativa");
+        }
+        if (size < 1 || size > 100) {
+            throw new BadRequestException("INVALID_PAGE_SIZE", "El tamaño de página debe estar entre 1 y 100");
+        }
     }
 
     private AuditEventResponseDto toResponseDto(AuditEvent event) {

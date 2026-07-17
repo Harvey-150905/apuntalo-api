@@ -33,12 +33,13 @@ public class AuditEventController {
             @RequestParam(required = false) AuditEntityType entityType,
             @RequestParam(required = false) Long entityId,
             @RequestParam(required = false) AuditAction action,
+            @RequestParam(required = false) Long userId,
             @RequestParam(required = false) Boolean success,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size
     ) {
-        return auditEventService.findFiltered(entityType, entityId, action, success, from, to, page, size);
+        return auditEventService.findFiltered(entityType, entityId, action, userId, success, from, to, page, size);
     }
 }
