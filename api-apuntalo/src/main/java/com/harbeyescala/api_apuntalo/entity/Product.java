@@ -9,7 +9,7 @@ import java.math.BigDecimal;
 @Table(
     name = "products",
     uniqueConstraints = {
-        @UniqueConstraint(columnNames = {"negocio_id", "name"})
+        @UniqueConstraint(columnNames = {"negocio_id", "store_id", "name"})
     }
 )
 @Getter
@@ -49,4 +49,6 @@ public class Product {
     @ManyToOne(optional = false, fetch = FetchType.LAZY)
     @JoinColumn(name = "negocio_id", nullable = false)
     private Negocio negocio;
+    @ManyToOne(optional=false,fetch=FetchType.LAZY) @JoinColumn(name="store_id",nullable=false)
+    private Store store;
 }

@@ -10,8 +10,6 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.http.MediaType;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.harbeyescala.api_apuntalo.exception.ApiError;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -24,7 +22,7 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtFilter;
     private final AuditRequestContextFilter auditRequestContextFilter;
-    private final ObjectMapper objectMapper;
+    private final ApiErrorWriter errorWriter;
 
     @Value("${app.cors.allowed-origin-patterns:http://localhost:[*],http://127.0.0.1:[*],http://192.168.1.185:[*]}")
     private String allowedOriginPatterns;
@@ -32,11 +30,11 @@ public class SecurityConfig {
     public SecurityConfig(
             JwtAuthenticationFilter jwtFilter,
             AuditRequestContextFilter auditRequestContextFilter,
-            ObjectMapper objectMapper
+            ApiErrorWriter errorWriter
     ) {
         this.jwtFilter = jwtFilter;
         this.auditRequestContextFilter = auditRequestContextFilter;
-        this.objectMapper = objectMapper;
+        this.errorWriter = errorWriter;
     }
 
     @Bean
@@ -53,18 +51,29 @@ public class SecurityConfig {
             .httpBasic(basic -> basic.disable())
             .formLogin(form -> form.disable())
             .logout(logout -> logout.disable())
-            .exceptionHandling(errors -> errors.authenticationEntryPoint((request, response, ex) -> {
-                response.setStatus(401);
-                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                response.setCharacterEncoding("UTF-8");
-                objectMapper.writeValue(response.getWriter(),
-                        new ApiError("UNAUTHORIZED", "Autenticación requerida"));
-            }))
+            .exceptionHandling(errors -> errors
+                .authenticationEntryPoint((request, response, ex) -> errorWriter.write(
+                        request, response, 401, "UNAUTHORIZED", "Autenticación requerida"))
+                .accessDeniedHandler((request, response, ex) -> errorWriter.write(
+                        request, response, 403, "ACCESS_DENIED", "No tienes permisos para realizar esta acción")))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .requestMatchers("/api/auth/login").permitAll()
                 .requestMatchers("/api/public/negocios").permitAll()
                 .requestMatchers("/api/auth/me").authenticated()
+
+                .requestMatchers("/api/admin/cash-management", "/api/admin/cash-management/**")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN")
+                .requestMatchers("/api/admin/cash-reconciliation", "/api/admin/cash-reconciliation/**")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN")
+                .requestMatchers("/api/admin/cash-registers", "/api/admin/cash-registers/**")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN")
+                .requestMatchers(HttpMethod.GET, "/api/cash-registers/active")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN", "CAMARERO")
+                .requestMatchers("/api/admin/cash-sessions", "/api/admin/cash-sessions/**")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN")
+                .requestMatchers("/api/cash-sessions", "/api/cash-sessions/**")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN", "CAMARERO")
 
                 .requestMatchers(HttpMethod.GET, "/api/users/**")
                     .hasAnyRole("SUPER_ADMIN", "ADMIN")

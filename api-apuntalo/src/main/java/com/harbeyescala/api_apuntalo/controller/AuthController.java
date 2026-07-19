@@ -3,6 +3,9 @@ package com.harbeyescala.api_apuntalo.controller;
 import com.harbeyescala.api_apuntalo.dto.LoginRequestDto;
 import com.harbeyescala.api_apuntalo.dto.LoginResponseDto;
 import com.harbeyescala.api_apuntalo.dto.MeResponseDto;
+import com.harbeyescala.api_apuntalo.dto.SwitchStoreRequestDto;
+import com.harbeyescala.api_apuntalo.dto.SwitchStoreResponseDto;
+import com.harbeyescala.api_apuntalo.dto.UserStoreAccessResponseDto;
 import com.harbeyescala.api_apuntalo.security.AuthenticatedUserPrincipal;
 import com.harbeyescala.api_apuntalo.security.CurrentUser;
 import com.harbeyescala.api_apuntalo.service.AuthService;
@@ -27,6 +30,17 @@ public class AuthController {
         return ResponseEntity.ok(authService.login(dto));
     }
 
+    @PostMapping("/switch-store")
+    public ResponseEntity<SwitchStoreResponseDto> switchStore(
+            @Valid @RequestBody SwitchStoreRequestDto dto) {
+        return ResponseEntity.ok(authService.switchStore(dto.getStoreId()));
+    }
+
+    @GetMapping("/stores")
+    public ResponseEntity<java.util.List<UserStoreAccessResponseDto>> stores() {
+        return ResponseEntity.ok(authService.authorizedStores());
+    }
+
     @GetMapping("/me")
     public ResponseEntity<MeResponseDto> me() {
         AuthenticatedUserPrincipal principal = currentUser.getPrincipal();
@@ -40,6 +54,8 @@ public class AuthController {
                                 .id(principal.tenantId())
                                 .name(principal.tenantName())
                                 .build())
+                        .activeStore(authService.currentActiveStore())
+                        .defaultStoreId(authService.currentDefaultStoreId())
                         .build()
         );
     }

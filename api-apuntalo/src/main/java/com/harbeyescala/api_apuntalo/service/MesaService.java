@@ -19,16 +19,19 @@ public class MesaService {
 
     private final MesaRepository mesaRepository;
     private final NegocioRepository negocioRepository;
+    private final ActiveStoreContext storeContext;
 
-    public MesaService(MesaRepository mesaRepository, NegocioRepository negocioRepository) {
+    public MesaService(MesaRepository mesaRepository, NegocioRepository negocioRepository, ActiveStoreContext storeContext) {
         this.mesaRepository = mesaRepository;
         this.negocioRepository = negocioRepository;
+        this.storeContext = storeContext;
     }
 
     public MesaResponseDto create(MesaRequestDto dto) {
         Long negocioId = SecurityUtils.getNegocioId();
 
-        if (mesaRepository.existsByNumeroAndNegocioId(dto.getNumero(), negocioId)) {
+        Long storeId=storeContext.storeId();
+        if (mesaRepository.existsByNumeroAndNegocioIdAndStoreId(dto.getNumero(), negocioId,storeId)) {
             throw new DuplicateResourceException("Ya existe una mesa con ese número");
         }
 
@@ -40,6 +43,7 @@ public class MesaService {
                 .status(MesaStatus.FREE)
                 .activa(dto.getActiva() != null ? dto.getActiva() : true)
                 .negocio(negocio)
+                .store(storeContext.requireStore())
                 .build();
 
         return toResponse(mesaRepository.save(mesa));
@@ -47,7 +51,7 @@ public class MesaService {
 
     public List<MesaResponseDto> findAll() {
         Long negocioId = SecurityUtils.getNegocioId();
-        return mesaRepository.findByNegocioId(negocioId)
+        return mesaRepository.findByNegocioIdAndStoreId(negocioId,storeContext.storeId())
                 .stream()
                 .map(this::toResponse)
                 .toList();
@@ -55,7 +59,7 @@ public class MesaService {
 
     public List<MesaResponseDto> findAllActivas() {
         Long negocioId = SecurityUtils.getNegocioId();
-        return mesaRepository.findByNegocioIdAndActivaTrue(negocioId)
+        return mesaRepository.findByNegocioIdAndStoreIdAndActivaTrue(negocioId,storeContext.storeId())
                 .stream()
                 .map(this::toResponse)
                 .toList();
@@ -64,7 +68,7 @@ public class MesaService {
     public MesaResponseDto findById(Long id) {
         Long negocioId = SecurityUtils.getNegocioId();
 
-        Mesa mesa = mesaRepository.findByIdAndNegocioId(id, negocioId)
+        Mesa mesa = mesaRepository.findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
         return toResponse(mesa);
@@ -73,10 +77,10 @@ public class MesaService {
     public MesaResponseDto update(Long id, MesaRequestDto dto) {
         Long negocioId = SecurityUtils.getNegocioId();
 
-        Mesa mesa = mesaRepository.findByIdAndNegocioId(id, negocioId)
+        Mesa mesa = mesaRepository.findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
-        if (mesaRepository.existsByNumeroAndNegocioIdAndIdNot(dto.getNumero(), negocioId, id)) {
+        if (mesaRepository.existsByNumeroAndNegocioIdAndStoreIdAndIdNot(dto.getNumero(), negocioId,storeContext.storeId(), id)) {
             throw new DuplicateResourceException("Ya existe otra mesa con ese número");
         }
 
@@ -92,7 +96,7 @@ public class MesaService {
     public void delete(Long id) {
         Long negocioId = SecurityUtils.getNegocioId();
 
-        Mesa mesa = mesaRepository.findByIdAndNegocioId(id, negocioId)
+        Mesa mesa = mesaRepository.findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
         mesa.setActiva(false);

@@ -37,15 +37,22 @@ public class JwtService {
      * Genera el JWT operativo del usuario. Las claims mínimas exigidas son
      * userId, username, role, tenantId y tokenVersion; sub es el userId.
      */
-    public String generateToken(User user) {
+    public String generateToken(
+            User user, Long tenantId, Long activeStoreId, Integer tokenVersion) {
+        if (tenantId == null || activeStoreId == null || tokenVersion == null
+                || !tenantId.equals(user.getNegocio().getId())
+                || !tokenVersion.equals(user.getTokenVersion())) {
+            throw new IllegalArgumentException("El contexto autenticado del token no es válido");
+        }
         return Jwts.builder()
                 .setSubject(String.valueOf(user.getId()))
                 .claim("userId", user.getId())
                 .claim("username", user.getUsername())
                 .claim("role", user.getRole().name())
-                .claim("tenantId", user.getNegocio().getId())
+                .claim("tenantId", tenantId)
                 .claim("tenantName", user.getNegocio().getNombre())
-                .claim("tokenVersion", user.getTokenVersion())
+                .claim("storeId", activeStoreId)
+                .claim("tokenVersion", tokenVersion)
                 .setIssuedAt(new Date())
                 .setExpiration(new Date(System.currentTimeMillis() + expirationMs))
                 .signWith(key)

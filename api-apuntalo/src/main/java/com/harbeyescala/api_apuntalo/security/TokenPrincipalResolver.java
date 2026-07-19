@@ -3,6 +3,7 @@ package com.harbeyescala.api_apuntalo.security;
 import com.harbeyescala.api_apuntalo.entity.Role;
 import com.harbeyescala.api_apuntalo.entity.User;
 import com.harbeyescala.api_apuntalo.repository.UserRepository;
+import com.harbeyescala.api_apuntalo.repository.UserStoreAccessRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,13 +19,19 @@ import org.springframework.transaction.annotation.Transactional;
 public class TokenPrincipalResolver {
 
     private final UserRepository userRepository;
+    private final UserStoreAccessRepository accessRepository;
 
-    public TokenPrincipalResolver(UserRepository userRepository) {
+    public TokenPrincipalResolver(
+            UserRepository userRepository,
+            UserStoreAccessRepository accessRepository) {
         this.userRepository = userRepository;
+        this.accessRepository = accessRepository;
     }
 
     @Transactional(readOnly = true)
-    public AuthenticatedUserPrincipal resolve(Long userId, Long tenantId, Role claimedRole, Integer claimedTokenVersion) {
+    public AuthenticatedUserPrincipal resolve(
+            Long userId, Long tenantId, Long storeId,
+            Role claimedRole, Integer claimedTokenVersion) {
         User user = userRepository.findByIdAndNegocioId(userId, tenantId)
                 .orElseThrow(() -> new IllegalStateException("Token inválido: el usuario ya no pertenece a ese tenant"));
 
@@ -44,11 +51,16 @@ public class TokenPrincipalResolver {
             throw new IllegalStateException("Token inválido: sesión invalidada");
         }
 
+        if (accessRepository.findValidActiveStoreAccess(userId, storeId, tenantId).isEmpty()) {
+            throw new IllegalStateException("Token inválido: contexto de tienda no disponible");
+        }
+
         return new AuthenticatedUserPrincipal(
                 user.getId(),
                 user.getUsername(),
                 user.getNegocio().getId(),
                 user.getNegocio().getNombre(),
+                storeId,
                 user.getRole(),
                 user.getTokenVersion()
         );

@@ -3,9 +3,14 @@ package com.harbeyescala.api_apuntalo.service;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.DecimalNode;
 import com.harbeyescala.api_apuntalo.dto.IdempotentOutcome;
 import com.harbeyescala.api_apuntalo.entity.IdempotencyRecord;
 import com.harbeyescala.api_apuntalo.entity.enums.IdempotencyStatus;
+import com.harbeyescala.api_apuntalo.entity.enums.OperationScopeType;
 import com.harbeyescala.api_apuntalo.exception.BadRequestException;
 import com.harbeyescala.api_apuntalo.exception.ConflictException;
 import com.harbeyescala.api_apuntalo.security.CurrentUser;
@@ -36,6 +41,7 @@ public class IdempotencyService {
     private final CurrentUser currentUser;
     private final ObjectMapper hashMapper;
     private final ObjectMapper jsonMapper;
+    private final ActiveStoreContext storeContext;
 
     @Value("${app.idempotency.enforced:true}")
     private boolean enforced;
@@ -46,11 +52,16 @@ public class IdempotencyService {
     @Value("${app.idempotency.retention-hours:48}")
     private long retentionHours;
 
-    public IdempotencyService(IdempotencyRecordService recordService, CurrentUser currentUser, ObjectMapper objectMapper) {
+    @Value("${app.idempotency.processing-timeout-minutes:5}")
+    private long processingTimeoutMinutes;
+
+    public IdempotencyService(IdempotencyRecordService recordService, CurrentUser currentUser, ObjectMapper objectMapper,
+                              ActiveStoreContext storeContext) {
         this.recordService = recordService;
         this.currentUser = currentUser;
         this.jsonMapper = objectMapper;
         this.hashMapper = objectMapper.copy();
+        this.storeContext = storeContext;
         this.hashMapper.configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
         this.hashMapper.configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
     }
@@ -87,12 +98,25 @@ public class IdempotencyService {
 
         Long tenantId = currentUser.getTenantId();
         Long userId = currentUser.getUserId();
-        String requestHash = computeHash(requestPayload);
+        OperationScopeType scopeType = IdempotencyOperationScopes.require(operation);
+        Long storeId = scopeType == OperationScopeType.STORE ? storeContext.requireStore().getId() : null;
+        String requestHash = computeHash(java.util.Map.of(
+                "storeId", storeId == null ? "TENANT" : storeId,
+                "payload", requestPayload == null ? new Object() : requestPayload));
 
-        Optional<IdempotencyRecord> existing = recordService.find(tenantId, userId, operation, key);
+        Optional<IdempotencyRecord> existing = recordService.find(tenantId, userId, storeId, operation, key);
 
         if (existing.isPresent()) {
-            Optional<IdempotentOutcome<T>> replay = handleExisting(existing.get(), requestHash, responseType);
+            IdempotencyRecord existingRecord = existing.get();
+            if (existingRecord.getStatus() == IdempotencyStatus.PROCESSING
+                    && existingRecord.getRequestHash().equals(requestHash)
+                    && recordService.discardStaleProcessing(
+                            tenantId, userId, storeId, operation, key, requestHash,
+                            Duration.ofMinutes(processingTimeoutMinutes))) {
+                return execute(operation, resourceType, key, requestPayload,
+                        successStatus, responseType, action, true);
+            }
+            Optional<IdempotentOutcome<T>> replay = handleExisting(existingRecord, requestHash, responseType);
             if (replay.isPresent()) {
                 return replay.get();
             }
@@ -106,9 +130,9 @@ public class IdempotencyService {
 
         IdempotencyRecord record;
         try {
-            record = recordService.begin(tenantId, userId, operation, key, requestHash, resourceType, Duration.ofHours(retentionHours));
+            record = recordService.begin(tenantId, userId, storeId, scopeType, operation, key, requestHash, resourceType, Duration.ofHours(retentionHours));
         } catch (DataIntegrityViolationException race) {
-            IdempotencyRecord raced = recordService.find(tenantId, userId, operation, key)
+            IdempotencyRecord raced = recordService.find(tenantId, userId, storeId, operation, key)
                     .orElseThrow(() -> new ConflictException("IDEMPOTENCY_REQUEST_IN_PROGRESS",
                             "Ya existe una operación en curso para esta Idempotency-Key"));
 
@@ -181,13 +205,31 @@ public class IdempotencyService {
 
     private String computeHash(Object payload) {
         try {
-            String canonicalJson = hashMapper.writeValueAsString(payload == null ? new Object() : payload);
+            JsonNode tree = hashMapper.valueToTree(payload == null ? new Object() : payload);
+            String canonicalJson = hashMapper.writeValueAsString(canonicalizeNumbers(tree));
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hashBytes = digest.digest(canonicalJson.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hashBytes);
         } catch (NoSuchAlgorithmException | com.fasterxml.jackson.core.JsonProcessingException e) {
             throw new IllegalStateException("No se pudo calcular el hash de la petición", e);
         }
+    }
+
+    private JsonNode canonicalizeNumbers(JsonNode node) {
+        if (node == null) return null;
+        if (node.isBigDecimal()) {
+            return DecimalNode.valueOf(MoneyPolicy.canonicalize(node.decimalValue()));
+        }
+        if (node.isObject()) {
+            ObjectNode object = (ObjectNode) node;
+            object.fields().forEachRemaining(entry -> object.set(entry.getKey(), canonicalizeNumbers(entry.getValue())));
+        } else if (node.isArray()) {
+            ArrayNode array = (ArrayNode) node;
+            for (int index = 0; index < array.size(); index++) {
+                array.set(index, canonicalizeNumbers(array.get(index)));
+            }
+        }
+        return node;
     }
 
     private String serialize(Object value) {

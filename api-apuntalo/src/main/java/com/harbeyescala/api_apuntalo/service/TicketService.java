@@ -3,12 +3,14 @@ package com.harbeyescala.api_apuntalo.service;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.math.RoundingMode;
+import java.util.HashSet;
+import java.util.Set;
 
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -18,10 +20,13 @@ import org.springframework.transaction.annotation.Transactional;
 import com.harbeyescala.api_apuntalo.dto.AddTicketLinesRequestDto;
 import com.harbeyescala.api_apuntalo.dto.ApplyLineDiscountRequestDto;
 import com.harbeyescala.api_apuntalo.dto.CashClosingSummaryDto;
+import com.harbeyescala.api_apuntalo.dto.CashSessionReferenceDto;
 import com.harbeyescala.api_apuntalo.dto.ChangeTicketMesaRequestDto;
 import com.harbeyescala.api_apuntalo.dto.PageResponseDto;
 import com.harbeyescala.api_apuntalo.dto.PayTicketRequestDto;
 import com.harbeyescala.api_apuntalo.dto.PaymentMethodSummaryDto;
+import com.harbeyescala.api_apuntalo.dto.PaymentComponentRequestDto;
+import com.harbeyescala.api_apuntalo.dto.PaymentResponseDto;
 import com.harbeyescala.api_apuntalo.dto.TicketDetailResponseDto;
 import com.harbeyescala.api_apuntalo.dto.DailySalesSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.TicketLineRequestDto;
@@ -33,6 +38,8 @@ import com.harbeyescala.api_apuntalo.dto.UpdateTicketNotesRequestDto;
 import com.harbeyescala.api_apuntalo.dto.ProductSalesSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.UserSalesSummaryDto;
 import com.harbeyescala.api_apuntalo.entity.Mesa;
+import com.harbeyescala.api_apuntalo.entity.CashSession;
+import com.harbeyescala.api_apuntalo.entity.Payment;
 import com.harbeyescala.api_apuntalo.entity.Negocio;
 import com.harbeyescala.api_apuntalo.entity.Product;
 import com.harbeyescala.api_apuntalo.entity.Ticket;
@@ -40,6 +47,7 @@ import com.harbeyescala.api_apuntalo.entity.TicketLine;
 import com.harbeyescala.api_apuntalo.entity.TicketNumberSequence;
 import com.harbeyescala.api_apuntalo.entity.User;
 import com.harbeyescala.api_apuntalo.entity.enums.AuditAction;
+import com.harbeyescala.api_apuntalo.entity.enums.CashSessionStatus;
 import com.harbeyescala.api_apuntalo.entity.enums.AuditEntityType;
 import com.harbeyescala.api_apuntalo.entity.enums.MesaStatus;
 import com.harbeyescala.api_apuntalo.entity.enums.PaymentMethod;
@@ -47,8 +55,11 @@ import com.harbeyescala.api_apuntalo.entity.enums.TicketLineStatus;
 import com.harbeyescala.api_apuntalo.entity.enums.TicketStatus;
 import com.harbeyescala.api_apuntalo.exception.BusinessRuleException;
 import com.harbeyescala.api_apuntalo.exception.ConflictException;
+import com.harbeyescala.api_apuntalo.exception.CashSessionNotFoundException;
 import com.harbeyescala.api_apuntalo.exception.ResourceNotFoundException;
 import com.harbeyescala.api_apuntalo.repository.MesaRepository;
+import com.harbeyescala.api_apuntalo.repository.CashSessionRepository;
+import com.harbeyescala.api_apuntalo.repository.PaymentRepository;
 import com.harbeyescala.api_apuntalo.repository.NegocioRepository;
 import com.harbeyescala.api_apuntalo.repository.ProductRepository;
 import com.harbeyescala.api_apuntalo.repository.TicketLineRepository;
@@ -68,10 +79,14 @@ public class TicketService {
     private final TicketLineRepository ticketLineRepository;
     private final ProductRepository productRepository;
     private final TicketNumberSequenceRepository ticketNumberSequenceRepository;
+    private final PaymentRepository paymentRepository;
+    private final CashSessionRepository cashSessionRepository;
     private final TicketLinePricingService ticketLinePricingService;
     private final AuditEventService auditEventService;
     private final AuditFailureRecorder auditFailureRecorder;
     private final CurrentUser currentUser;
+    private final Clock clock;
+    private final ActiveStoreContext storeContext;
 
     public TicketService(
             TicketRepository ticketRepository,
@@ -81,10 +96,14 @@ public class TicketService {
             TicketLineRepository ticketLineRepository,
             ProductRepository productRepository,
             TicketNumberSequenceRepository ticketNumberSequenceRepository,
+            PaymentRepository paymentRepository,
+            CashSessionRepository cashSessionRepository,
             TicketLinePricingService ticketLinePricingService,
             AuditEventService auditEventService,
             AuditFailureRecorder auditFailureRecorder,
-            CurrentUser currentUser
+            CurrentUser currentUser,
+            Clock clock,
+            ActiveStoreContext storeContext
     ) {
         this.ticketRepository = ticketRepository;
         this.mesaRepository = mesaRepository;
@@ -93,10 +112,14 @@ public class TicketService {
         this.ticketLineRepository = ticketLineRepository;
         this.productRepository = productRepository;
         this.ticketNumberSequenceRepository = ticketNumberSequenceRepository;
+        this.paymentRepository = paymentRepository;
+        this.cashSessionRepository = cashSessionRepository;
         this.ticketLinePricingService = ticketLinePricingService;
         this.auditEventService = auditEventService;
         this.auditFailureRecorder = auditFailureRecorder;
         this.currentUser = currentUser;
+        this.clock = clock;
+        this.storeContext=storeContext;
     }
 
     // ------------------------------------------------------------------
@@ -107,9 +130,12 @@ public class TicketService {
     public TicketResponseDto create(TicketRequestDto dto) {
         Long tenantId = currentUser.getTenantId();
         Long userId = currentUser.getUserId();
+        Long storeId = storeContext.storeId();
 
-        // Bloqueo de mesa: comprobar-y-ocupar debe ser atómico (Fase 3.4).
-        Mesa mesa = mesaRepository.findByIdAndNegocioIdForUpdate(dto.getMesaId(), tenantId)
+        CashSession originSession = lockUsableSession(dto.getOriginCashSessionId(), tenantId);
+
+        // Orden global: sesión -> mesa.
+        Mesa mesa = mesaRepository.findByIdAndNegocioIdAndStoreIdForUpdate(dto.getMesaId(), tenantId,storeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
         try {
@@ -117,9 +143,10 @@ public class TicketService {
                 throw new BusinessRuleException("MESA_INACTIVE", "La mesa está desactivada");
             }
 
-            boolean alreadyOpen = ticketRepository.existsByMesaIdAndNegocioIdAndStatus(
+            boolean alreadyOpen = ticketRepository.existsByMesaIdAndNegocioIdAndStoreIdAndStatus(
                     mesa.getId(),
                     tenantId,
+                    storeId,
                     TicketStatus.OPEN
             );
 
@@ -143,7 +170,10 @@ public class TicketService {
                 .notes(normalizeNotes(dto.getNotes()))
                 .mesa(mesa)
                 .negocio(negocio)
+                .store(mesa.getStore())
                 .createdBy(createdBy)
+                .originCashSession(originSession)
+                .originSessionLegacy(false)
                 .build();
 
         // La restricción única parcial "uk_ticket_mesa_open" (Postgres) es la
@@ -164,15 +194,17 @@ public class TicketService {
         return toResponse(savedTicket);
     }
 
+    @Transactional(readOnly = true)
     public TicketResponseDto findOpenByMesa(Long mesaId) {
         Long tenantId = currentUser.getTenantId();
 
-        mesaRepository.findByIdAndNegocioId(mesaId, tenantId)
+        mesaRepository.findByIdAndNegocioIdAndStoreId(mesaId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
-        Ticket ticket = ticketRepository.findByMesaIdAndNegocioIdAndStatus(
-                        mesaId,
-                        tenantId,
+        Ticket ticket = ticketRepository.findByMesaIdAndNegocioIdAndStoreIdAndStatus(
+                mesaId,
+                tenantId,
+                storeContext.storeId(),
                         TicketStatus.OPEN
                 )
                 .orElseThrow(() -> new ResourceNotFoundException("La mesa no tiene ticket abierto"));
@@ -190,7 +222,7 @@ public class TicketService {
 
         // Bloqueo del ticket: serializa el cálculo del batch y del total
         // frente a otras tablets añadiendo líneas al mismo ticket (Fase 3.7/3.8).
-        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticketId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         try {
@@ -206,7 +238,7 @@ public class TicketService {
 
             for (TicketLineRequestDto lineDto : dto.getLines()) {
                 String normalizedNotes = normalizeNotes(lineDto.getNotes());
-                Product product = productRepository.findByIdAndNegocioId(lineDto.getProductId(), tenantId)
+                Product product = productRepository.findByIdAndNegocioIdAndStoreId(lineDto.getProductId(), tenantId,storeContext.storeId())
                         .orElseThrow(() -> new ResourceNotFoundException(
                                 "Producto no encontrado: " + lineDto.getProductId()
                         ));
@@ -243,6 +275,8 @@ public class TicketService {
 
                 TicketLine ticketLine = TicketLine.builder()
                         .ticket(ticket)
+                        .store(ticket.getStore())
+                        .negocio(ticket.getNegocio())
                         .productId(groupedLine.getProductId())
                         .productNameSnapshot(groupedLine.getProductName())
                         .unitPriceSnapshot(groupedLine.getUnitPrice())
@@ -288,10 +322,13 @@ public class TicketService {
         Long tenantId = currentUser.getTenantId();
         Long userId = currentUser.getUserId();
 
+        CashSession paymentSession = lockUsableSession(dto.getCashSessionId(), tenantId);
+
+        // Orden global: sesión de cobro -> ticket.
         // Bloqueo de escritura antes de comprobar el estado (Fase 3.6): la
         // segunda petición concurrente espera a que la primera termine y
         // encuentra el ticket ya PAID, sin volver a cobrar.
-        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticketId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         Map<String, Object> previousState = ticketSnapshot(ticket);
@@ -320,13 +357,37 @@ public class TicketService {
             throw ex;
         }
 
+        List<ValidatedPayment> validatedPayments = validatePayments(dto, ticket.getTotal());
+
         User paidBy = userRepository.findByIdAndNegocioId(userId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
 
+        LocalDateTime paidAt = LocalDateTime.now(clock);
+        List<Payment> payments = validatedPayments.stream()
+                .map(component -> Payment.builder()
+                        .negocioId(tenantId)
+                        .store(ticket.getStore())
+                        .ticket(ticket)
+                        .cashSession(paymentSession)
+                        .method(component.method())
+                        .amount(component.amount())
+                        .cashReceived(component.cashReceived())
+                        .changeGiven(component.changeGiven())
+                        .paidBy(paidBy)
+                        .paidAt(paidAt)
+                        .legacyImported(false)
+                        .sessionLegacy(false)
+                        .createdAt(paidAt)
+                        .build())
+                .toList();
+        paymentRepository.saveAllAndFlush(payments);
+
         ticket.setStatus(TicketStatus.PAID);
-        ticket.setPaidAt(LocalDateTime.now());
+        ticket.setPaidAt(paidAt);
         ticket.setPaidBy(paidBy);
-        ticket.setPaymentMethod(dto.getPaymentMethod());
+        ticket.setPaymentMethod(validatedPayments.size() == 2
+                ? PaymentMethod.MIXED
+                : validatedPayments.get(0).method());
 
         // Numeración comercial bajo bloqueo (Fase 5.1): la secuencia por
         // negocio se bloquea con PESSIMISTIC_WRITE y se incrementa de forma
@@ -347,7 +408,8 @@ public class TicketService {
                 ticket.getId(),
                 AuditAction.TICKET_PAID,
                 previousState,
-                ticketSnapshot(ticket)
+                ticketSnapshot(ticket),
+                paymentAuditMetadata(ticket, payments, paidBy)
         );
         auditEventService.recordSuccess(
                 AuditEntityType.TICKET,
@@ -356,23 +418,28 @@ public class TicketService {
                 null,
                 Map.of(
                         "commercialNumber", assignedNumber,
-                        "commercialNumberFormatted", formatCommercialNumber(assignedNumber)
+                        "commercialNumberFormatted", formatCommercialNumber(assignedNumber),
+                        "storeId", ticket.getStore().getId()
                 )
         );
 
-        return toDetailResponse(ticket, lines);
+        return toDetailResponse(ticket, lines, payments);
     }
 
     /**
-     * Asigna el próximo número comercial del negocio bajo bloqueo pesimista
+     * Asigna el próximo número comercial de la Store bajo bloqueo pesimista
      * (Fase 5.1). Si la fila de secuencia todavía no existe para el negocio
      * (por ejemplo, negocios creados antes de esta fase que no pasaron por
      * la migración) se crea de forma perezosa, tolerando la carrera con
      * otra transacción que intente lo mismo.
      */
     private Long assignCommercialNumber(Ticket ticket, Long tenantId) {
-        TicketNumberSequence sequence = ticketNumberSequenceRepository.findByNegocioIdForUpdate(tenantId)
-                .orElseGet(() -> createSequence(tenantId));
+        Long storeId=storeContext.storeId();
+        if (!ticket.getStore().getId().equals(storeId)) throw new ResourceNotFoundException("Ticket no encontrado");
+        Optional<TicketNumberSequence> existing= ticketNumberSequenceRepository.findByNegocioIdAndStoreIdForUpdate(tenantId,storeId);
+        if(existing.isEmpty()) ticketNumberSequenceRepository.initializeIfAbsent(tenantId,storeId);
+        TicketNumberSequence sequence=ticketNumberSequenceRepository.findByNegocioIdAndStoreIdForUpdate(tenantId,storeId)
+                .orElseThrow(()->new IllegalStateException("No se pudo inicializar la secuencia comercial"));
 
         Long assignedNumber = sequence.getNextNumber();
         sequence.setNextNumber(assignedNumber + 1);
@@ -380,23 +447,6 @@ public class TicketService {
 
         ticket.setCommercialNumber(assignedNumber);
         return assignedNumber;
-    }
-
-    private TicketNumberSequence createSequence(Long tenantId) {
-        try {
-            return ticketNumberSequenceRepository.saveAndFlush(
-                    TicketNumberSequence.builder()
-                            .negocioId(tenantId)
-                            .nextNumber(1L)
-                            .version(0L)
-                            .build()
-            );
-        } catch (DataIntegrityViolationException race) {
-            return ticketNumberSequenceRepository.findByNegocioIdForUpdate(tenantId)
-                    .orElseThrow(() -> new IllegalStateException(
-                            "No se pudo inicializar la secuencia de numeración del negocio " + tenantId
-                    ));
-        }
     }
 
     // ------------------------------------------------------------------
@@ -407,7 +457,7 @@ public class TicketService {
     public TicketDetailResponseDto cancelLine(Long ticketId, Long lineId) {
         Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticketId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         TicketLine line;
@@ -457,7 +507,7 @@ public class TicketService {
     public TicketDetailResponseDto cancelBatch(Long ticketId, Integer batchNumber) {
         Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticketId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         List<TicketLine> activeLines;
@@ -513,7 +563,7 @@ public class TicketService {
         Long tenantId = currentUser.getTenantId();
         Long userId = currentUser.getUserId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticketId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         try {
@@ -538,7 +588,7 @@ public class TicketService {
         User cancelledBy = userRepository.findByIdAndNegocioId(userId, tenantId).orElse(null);
 
         ticket.setStatus(TicketStatus.CANCELLED);
-        ticket.setCancelledAt(LocalDateTime.now());
+        ticket.setCancelledAt(LocalDateTime.now(clock));
         ticket.setCancelledBy(cancelledBy);
         ticketRepository.save(ticket);
 
@@ -564,7 +614,7 @@ public class TicketService {
             return;
         }
 
-        Mesa mesa = mesaRepository.findByIdAndNegocioIdForUpdate(ticket.getMesa().getId(), tenantId)
+        Mesa mesa = mesaRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticket.getMesa().getId(), tenantId,storeContext.storeId())
                 .orElse(ticket.getMesa());
         mesa.setStatus(MesaStatus.FREE);
         mesaRepository.save(mesa);
@@ -578,7 +628,7 @@ public class TicketService {
     public TicketDetailResponseDto changeMesa(Long ticketId, ChangeTicketMesaRequestDto dto) {
         Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticketId, tenantId,storeContext.storeId())
             .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         try {
@@ -601,9 +651,9 @@ public class TicketService {
         Long firstId = Math.min(originMesaId, destinationMesaId);
         Long secondId = Math.max(originMesaId, destinationMesaId);
 
-        Mesa firstMesa = mesaRepository.findByIdAndNegocioIdForUpdate(firstId, tenantId)
+        Mesa firstMesa = mesaRepository.findByIdAndNegocioIdAndStoreIdForUpdate(firstId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
-        Mesa secondMesa = mesaRepository.findByIdAndNegocioIdForUpdate(secondId, tenantId)
+        Mesa secondMesa = mesaRepository.findByIdAndNegocioIdAndStoreIdForUpdate(secondId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Mesa no encontrada"));
 
         Mesa origen = firstId.equals(originMesaId) ? firstMesa : secondMesa;
@@ -654,7 +704,7 @@ public class TicketService {
         Long tenantId = currentUser.getTenantId();
         Long userId = currentUser.getUserId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticketId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         TicketLine line;
@@ -696,7 +746,7 @@ public class TicketService {
                 User actor = userRepository.findByIdAndNegocioId(userId, tenantId)
                         .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
                 line.setDiscountAppliedBy(actor);
-                line.setDiscountAppliedAt(LocalDateTime.now());
+                line.setDiscountAppliedAt(LocalDateTime.now(clock));
             }
         } catch (BusinessRuleException | ConflictException ex) {
             auditFailureSafely(AuditEntityType.TICKET_LINE, lineId, AuditAction.LINE_DISCOUNT_APPLIED, ex.getCode());
@@ -755,29 +805,28 @@ public class TicketService {
         validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
-        BigDecimal cashTotal = ticketRepository
-                .sumTotalByNegocioIdAndStatusAndPaymentMethodAndPaidAtBetween(
+        BigDecimal cashTotal = paymentRepository.sumAmount(
                         tenantId,
+                        storeContext.storeId(),
                         TicketStatus.PAID,
                         PaymentMethod.CASH,
                         fromDateTime,
-                        toDateTime
-                );
+                        toDateTime);
 
-        BigDecimal cardTotal = ticketRepository
-                .sumTotalByNegocioIdAndStatusAndPaymentMethodAndPaidAtBetween(
+        BigDecimal cardTotal = paymentRepository.sumAmount(
                         tenantId,
+                        storeContext.storeId(),
                         TicketStatus.PAID,
                         PaymentMethod.CARD,
                         fromDateTime,
-                        toDateTime
-                );
+                        toDateTime);
 
         BigDecimal totalSales = ticketRepository
             .sumTotalByNegocioIdAndStatusAndPaidAtBetween(
                     tenantId,
+                    storeContext.storeId(),
                     TicketStatus.PAID,
                     fromDateTime,
                     toDateTime
@@ -794,28 +843,26 @@ public class TicketService {
     public TicketDetailResponseDto findDetailById(Long ticketId) {
         Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioId(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreId(ticketId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         return toDetailResponse(ticket, currentLines(ticket, tenantId));
     }
 
+    @Transactional(readOnly = true)
     public List<TicketResponseDto> findPaidTicketsByDateRange(LocalDate from, LocalDate to) {
         Long tenantId = currentUser.getTenantId();
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
-        return ticketRepository
-                .findByNegocioIdAndStatusAndPaidAtBetweenOrderByPaidAtDesc(
+        return toResponses(ticketRepository
+                .findByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
                         tenantId,
                         TicketStatus.PAID,
                         fromDateTime,
                         toDateTime
-                )
-                .stream()
-                .map(this::toResponse)
-                .toList();
+                ));
     }
 
     public List<UserSalesSummaryDto> getUserSalesSummary(LocalDate from, LocalDate to) {
@@ -823,7 +870,7 @@ public class TicketService {
         validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
         return ticketRepository.findUserSalesSummaryByNegocioIdAndStatusAndPaidAtBetween(
                 tenantId,
@@ -833,6 +880,7 @@ public class TicketService {
         );
     }
 
+    @Transactional(readOnly = true)
     public List<TicketResponseDto> findPaidTicketsFiltered(LocalDate from, LocalDate to) {
         if ((from == null && to != null) || (from != null && to == null)) {
             throw new BusinessRuleException("INVALID_DATE_RANGE", "Debes enviar ambas fechas: from y to");
@@ -849,32 +897,28 @@ public class TicketService {
         return findPaidTickets();
     }
 
+    @Transactional(readOnly = true)
     public List<TicketResponseDto> findOpenTickets() {
         Long tenantId = currentUser.getTenantId();
 
-        return ticketRepository.findByNegocioIdAndStatusOrderByCreatedAtDesc(tenantId, TicketStatus.OPEN)
-                .stream()
-                .map(this::toResponse)
-                .toList();
+        return toResponses(ticketRepository.findByNegocioIdAndStoreIdAndStatusOrderByCreatedAtDesc(
+                tenantId,storeContext.storeId(), TicketStatus.OPEN));
     }
 
+    @Transactional(readOnly = true)
     public List<TicketResponseDto> findPaidTickets() {
         Long tenantId = currentUser.getTenantId();
 
-        return ticketRepository.findByNegocioIdAndStatusOrderByPaidAtDesc(tenantId, TicketStatus.PAID)
-            .stream()
-            .map(this::toResponse)
-            .toList();
+        return toResponses(ticketRepository.findByNegocioIdAndStoreIdAndStatusOrderByPaidAtDesc(
+                tenantId,storeContext.storeId(), TicketStatus.PAID));
     }
 
+    @Transactional(readOnly = true)
     public List<TicketResponseDto> findCancelledTickets() {
         Long tenantId = currentUser.getTenantId();
 
-        return ticketRepository
-                .findByNegocioIdAndStatusOrderByUpdatedAtDesc(tenantId, TicketStatus.CANCELLED)
-                .stream()
-                .map(this::toResponse)
-                .toList();
+        return toResponses(ticketRepository
+                .findByNegocioIdAndStoreIdAndStatusOrderByUpdatedAtDesc(tenantId,storeContext.storeId(), TicketStatus.CANCELLED));
     }
 
     public BigDecimal getTotalSales(LocalDate from, LocalDate to) {
@@ -882,11 +926,12 @@ public class TicketService {
         validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
         BigDecimal total = ticketRepository
                 .sumTotalByNegocioIdAndStatusAndPaidAtBetween(
                         tenantId,
+                        storeContext.storeId(),
                         TicketStatus.PAID,
                         fromDateTime,
                         toDateTime
@@ -900,39 +945,42 @@ public class TicketService {
         validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
         BigDecimal totalSales = ticketRepository.sumTotalByNegocioIdAndStatusAndPaidAtBetween(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
         );
 
-        BigDecimal cashTotal = ticketRepository.sumTotalByNegocioIdAndStatusAndPaymentMethodAndPaidAtBetween(
+        BigDecimal cashTotal = paymentRepository.sumAmount(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 PaymentMethod.CASH,
                 fromDateTime,
                 toDateTime
         );
 
-        BigDecimal cardTotal = ticketRepository.sumTotalByNegocioIdAndStatusAndPaymentMethodAndPaidAtBetween(
+        BigDecimal cardTotal = paymentRepository.sumAmount(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 PaymentMethod.CARD,
                 fromDateTime,
                 toDateTime
         );
 
-        Long paidTickets = ticketRepository.countByNegocioIdAndStatusAndPaidAtBetween(
+        Long paidTickets = ticketRepository.countByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThan(
                 tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
         );
 
-        Long cancelledTickets = ticketRepository.countByNegocioIdAndStatusAndUpdatedAtBetween(
+        Long cancelledTickets = ticketRepository.countByNegocioIdAndStatusAndUpdatedAtGreaterThanEqualAndUpdatedAtLessThan(
                 tenantId,
                 TicketStatus.CANCELLED,
                 fromDateTime,
@@ -948,10 +996,14 @@ public class TicketService {
         );
     }
 
+    @Transactional(readOnly = true)
     public PageResponseDto<TicketResponseDto> findOpenTicketsPaged(int page, int size) {
+        PaginationPolicy.validate(page, size);
         Long tenantId = currentUser.getTenantId();
 
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequest.of(page, size, org.springframework.data.domain.Sort.by(
+                org.springframework.data.domain.Sort.Order.desc("createdAt"),
+                org.springframework.data.domain.Sort.Order.desc("id")));
 
         Page<Ticket> ticketPage = ticketRepository
             .findByNegocioIdAndStatusOrderByCreatedAtDesc(
@@ -963,10 +1015,14 @@ public class TicketService {
         return toPageResponse(ticketPage);
     }
 
+    @Transactional(readOnly = true)
     public PageResponseDto<TicketResponseDto> findCancelledTicketsPaged(int page, int size) {
+        PaginationPolicy.validate(page, size);
         Long tenantId = currentUser.getTenantId();
 
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequest.of(page, size, org.springframework.data.domain.Sort.by(
+                org.springframework.data.domain.Sort.Order.desc("updatedAt"),
+                org.springframework.data.domain.Sort.Order.desc("id")));
 
         Page<Ticket> ticketPage = ticketRepository
             .findByNegocioIdAndStatusOrderByUpdatedAtDesc(
@@ -984,7 +1040,7 @@ public class TicketService {
         validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
         return ticketLineRepository.findProductSalesSummary(
                 tenantId,
@@ -1001,10 +1057,10 @@ public class TicketService {
         validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
         List<Ticket> paidTickets = ticketRepository
-                .findByNegocioIdAndStatusAndPaidAtBetweenOrderByPaidAtDesc(
+                .findByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
                         tenantId,
                         TicketStatus.PAID,
                         fromDateTime,
@@ -1046,16 +1102,17 @@ public class TicketService {
         validateDateRange(from, to);
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
         BigDecimal totalSales = ticketRepository.sumTotalByNegocioIdAndStatusAndPaidAtBetween(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
         );
 
-        Long ticketCount = ticketRepository.countByNegocioIdAndStatusAndPaidAtBetween(
+        Long ticketCount = ticketRepository.countByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThan(
                 tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
@@ -1080,7 +1137,7 @@ public class TicketService {
     public TicketDetailResponseDto updateNotes(Long ticketId, UpdateTicketNotesRequestDto dto) {
         Long tenantId = currentUser.getTenantId();
 
-        Ticket ticket = ticketRepository.findByIdAndNegocioIdForUpdate(ticketId, tenantId)
+        Ticket ticket = ticketRepository.findByIdAndNegocioIdAndStoreIdForUpdate(ticketId, tenantId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket no encontrado"));
 
         ensureOpen(ticket);
@@ -1091,23 +1148,27 @@ public class TicketService {
         return toDetailResponse(ticket, currentLines(ticket, tenantId));
     }
 
+    @Transactional(readOnly = true)
     public PageResponseDto<TicketResponseDto> findPaidTicketsPaged(
         LocalDate from,
         LocalDate to,
         int page,
         int size
     ) {
+        PaginationPolicy.validate(page, size);
         validateDateRange(from, to);
 
         Long tenantId = currentUser.getTenantId();
 
         LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
 
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequest.of(page, size, org.springframework.data.domain.Sort.by(
+                org.springframework.data.domain.Sort.Order.desc("paidAt"),
+                org.springframework.data.domain.Sort.Order.desc("id")));
 
         Page<Ticket> ticketPage = ticketRepository
-            .findByNegocioIdAndStatusAndPaidAtBetweenOrderByPaidAtDesc(
+            .findByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
                 tenantId,
                 TicketStatus.PAID,
                 fromDateTime,
@@ -1123,10 +1184,7 @@ public class TicketService {
     // ------------------------------------------------------------------
 
     private PageResponseDto<TicketResponseDto> toPageResponse(Page<Ticket> ticketPage) {
-        List<TicketResponseDto> content = ticketPage.getContent()
-            .stream()
-            .map(this::toResponse)
-            .toList();
+        List<TicketResponseDto> content = toResponses(ticketPage.getContent());
 
         return new PageResponseDto<>(
             content,
@@ -1143,6 +1201,23 @@ public class TicketService {
     }
 
     private TicketResponseDto toResponse(Ticket ticket) {
+        CashSession paymentSession = paymentRepository
+                .findFirstByTicketIdAndNegocioIdOrderByIdAsc(ticket.getId(), ticket.getNegocio().getId())
+                .map(Payment::getCashSession).orElse(null);
+        return toResponse(ticket, paymentSession);
+    }
+
+    private List<TicketResponseDto> toResponses(List<Ticket> tickets) {
+        if (tickets.isEmpty()) return List.of();
+        Long tenantId = tickets.get(0).getNegocio().getId();
+        List<Long> ids = tickets.stream().map(Ticket::getId).toList();
+        Map<Long, CashSession> paymentSessions = new LinkedHashMap<>();
+        paymentRepository.findByTicketIdInAndNegocioIdOrderByIdAsc(ids, tenantId)
+                .forEach(p -> paymentSessions.putIfAbsent(p.getTicket().getId(), p.getCashSession()));
+        return tickets.stream().map(t -> toResponse(t, paymentSessions.get(t.getId()))).toList();
+    }
+
+    private TicketResponseDto toResponse(Ticket ticket, CashSession paymentSession) {
         return TicketResponseDto.builder()
                 .id(ticket.getId())
                 .status(ticket.getStatus())
@@ -1160,6 +1235,8 @@ public class TicketService {
                 .paidById(ticket.getPaidBy() != null ? ticket.getPaidBy().getId() : null)
                 .paidByUsername(ticket.getPaidBy() != null ? ticket.getPaidBy().getUsername() : null)
                 .paymentMethod(ticket.getPaymentMethod())
+                .originCashSession(toSessionReference(ticket.getOriginCashSession()))
+                .paymentCashSession(toSessionReference(paymentSession))
                 .build();
     }
 
@@ -1253,6 +1330,30 @@ public class TicketService {
     }
 
     private TicketDetailResponseDto toDetailResponse(Ticket ticket, List<TicketLineResponseDto> lines) {
+        List<Payment> payments = ticket.getId() == null
+                ? List.of()
+                : paymentRepository.findByTicketIdAndNegocioIdOrderByIdAsc(ticket.getId(), ticket.getNegocio().getId());
+        return toDetailResponse(ticket, lines, payments);
+    }
+
+    private CashSession lockUsableSession(Long sessionId, Long tenantId) {
+        if (sessionId == null) {
+            throw new BusinessRuleException("CASH_SESSION_REQUIRED", "La sesión de caja es obligatoria");
+        }
+        CashSession session = cashSessionRepository.findByIdAndNegocioIdAndStoreIdForUpdate(
+                        sessionId, tenantId,storeContext.storeId())
+                .orElseThrow(CashSessionNotFoundException::new);
+        if (session.getStatus() != CashSessionStatus.OPEN) {
+            throw new ConflictException("CASH_SESSION_CLOSED", "La sesión de caja está cerrada");
+        }
+        if (!Boolean.TRUE.equals(session.getCashRegister().getActive())) {
+            throw new ConflictException("CASH_SESSION_REGISTER_INACTIVE", "La caja de la sesión está desactivada");
+        }
+        return session;
+    }
+
+    private TicketDetailResponseDto toDetailResponse(
+            Ticket ticket, List<TicketLineResponseDto> lines, List<Payment> payments) {
         return TicketDetailResponseDto.builder()
                 .id(ticket.getId())
                 .status(ticket.getStatus())
@@ -1270,9 +1371,160 @@ public class TicketService {
                 .paidById(ticket.getPaidBy() != null ? ticket.getPaidBy().getId() : null)
                 .paidByUsername(ticket.getPaidBy() != null ? ticket.getPaidBy().getUsername() : null)
                 .lines(lines)
+                .payments(payments.stream().map(this::toPaymentResponse).toList())
                 .paymentMethod(ticket.getPaymentMethod())
+                .originCashSession(toSessionReference(ticket.getOriginCashSession()))
+                .paymentCashSession(payments.stream().findFirst().map(Payment::getCashSession)
+                        .map(this::toSessionReference).orElse(null))
                 .build();
     }
+
+    private CashSessionReferenceDto toSessionReference(CashSession session) {
+        if (session == null) return null;
+        return CashSessionReferenceDto.builder()
+                .id(session.getId())
+                .cashRegisterId(session.getCashRegister().getId())
+                .cashRegisterName(session.getCashRegister().getName())
+                .responsibleUserId(session.getOpenedBy().getId())
+                .responsibleUsername(session.getOpenedBy().getUsername())
+                .openedAt(session.getOpenedAt())
+                .build();
+    }
+
+    private PaymentResponseDto toPaymentResponse(Payment payment) {
+        return PaymentResponseDto.builder()
+                .paymentId(payment.getId())
+                .method(payment.getMethod())
+                .amount(payment.getAmount())
+                .cashReceived(payment.getCashReceived())
+                .changeGiven(payment.getChangeGiven())
+                .paidAt(payment.getPaidAt())
+                .paidById(payment.getPaidBy().getId())
+                .paidByUsername(payment.getPaidBy().getUsername())
+                .build();
+    }
+
+    private List<ValidatedPayment> validatePayments(PayTicketRequestDto dto, BigDecimal total) {
+        boolean legacy = dto.getPaymentMethod() != null;
+        boolean paymentsSupplied = dto.getPayments() != null;
+        boolean composed = paymentsSupplied && !dto.getPayments().isEmpty();
+        if (legacy && paymentsSupplied) {
+            throw new BusinessRuleException("PAYMENT_FORMAT_CONFLICT", "No se pueden mezclar los formatos de pago");
+        }
+        if (!legacy && !composed) {
+            throw new BusinessRuleException("PAYMENT_COMPONENTS_REQUIRED", "Debes enviar un método o componentes de pago");
+        }
+        if (legacy) {
+            if (dto.getPaymentMethod() == PaymentMethod.MIXED) {
+                throw new BusinessRuleException("MIXED_METHOD_NOT_ALLOWED_AS_COMPONENT", "MIXED requiere componentes CASH y CARD");
+            }
+            BigDecimal normalizedTotal = money(total);
+            return List.of(new ValidatedPayment(
+                    dto.getPaymentMethod(), normalizedTotal,
+                    dto.getPaymentMethod() == PaymentMethod.CASH ? normalizedTotal : null,
+                    dto.getPaymentMethod() == PaymentMethod.CASH ? money(BigDecimal.ZERO) : null));
+        }
+
+        List<PaymentComponentRequestDto> components = dto.getPayments();
+        if (components.size() < 1 || components.size() > 2) {
+            throw new BusinessRuleException("PAYMENT_COMPONENTS_REQUIRED", "El pago debe contener uno o dos componentes");
+        }
+        Set<PaymentMethod> methods = new HashSet<>();
+        List<ValidatedPayment> result = new java.util.ArrayList<>();
+        BigDecimal sum = BigDecimal.ZERO;
+        for (PaymentComponentRequestDto component : components) {
+            PaymentMethod method = component.getMethod();
+            if (method == null) {
+                throw new BusinessRuleException("PAYMENT_COMPONENTS_REQUIRED", "Cada componente requiere método");
+            }
+            if (method == PaymentMethod.MIXED) {
+                throw new BusinessRuleException("MIXED_METHOD_NOT_ALLOWED_AS_COMPONENT", "MIXED no es un componente de pago");
+            }
+            if (!methods.add(method)) {
+                throw new BusinessRuleException("PAYMENT_METHOD_DUPLICATED", "No se puede repetir el método de pago");
+            }
+            BigDecimal amount = component.getAmount();
+            if (amount == null && components.size() == 1) {
+                amount = total;
+            }
+            validateMoney(amount);
+            amount = money(amount);
+            if (amount.signum() <= 0) {
+                throw new BusinessRuleException("INVALID_PAYMENT_AMOUNT", "El importe debe ser positivo");
+            }
+
+            BigDecimal cashReceived = null;
+            BigDecimal changeGiven = null;
+            if (method == PaymentMethod.CARD) {
+                if (component.getCashReceived() != null || component.getChangeGiven() != null) {
+                    throw new BusinessRuleException("CASH_FIELDS_NOT_ALLOWED_FOR_CARD", "CARD no admite campos de efectivo");
+                }
+            } else {
+                if (component.getChangeGiven() != null) {
+                    throw new BusinessRuleException("CLIENT_CHANGE_NOT_ALLOWED", "El cambio lo calcula el servidor");
+                }
+                if (component.getCashReceived() == null) {
+                    throw new BusinessRuleException("CASH_RECEIVED_REQUIRED", "CASH requiere cashReceived");
+                }
+                validateMoney(component.getCashReceived());
+                cashReceived = money(component.getCashReceived());
+                if (cashReceived.signum() < 0) {
+                    throw new BusinessRuleException("INVALID_PAYMENT_AMOUNT", "El efectivo recibido no puede ser negativo");
+                }
+                if (cashReceived.compareTo(amount) < 0) {
+                    throw new BusinessRuleException("INSUFFICIENT_CASH", "El efectivo recibido es insuficiente");
+                }
+                changeGiven = money(cashReceived.subtract(amount));
+            }
+            sum = sum.add(amount);
+            result.add(new ValidatedPayment(method, amount, cashReceived, changeGiven));
+        }
+        if (money(sum).compareTo(money(total)) != 0) {
+            throw new BusinessRuleException("PAYMENT_TOTAL_MISMATCH", "La suma de pagos no coincide con el total del ticket");
+        }
+        return result;
+    }
+
+    private void validateMoney(BigDecimal value) {
+        if (value == null) {
+            throw new BusinessRuleException("PAYMENT_COMPONENTS_REQUIRED", "Falta un importe obligatorio");
+        }
+        MoneyPolicy.requireValid(value, "INVALID_MONETARY_SCALE", "Los importes admiten como máximo dos decimales");
+    }
+
+    private BigDecimal money(BigDecimal value) {
+        return MoneyPolicy.normalize(value);
+    }
+
+    private Map<String, Object> paymentAuditMetadata(Ticket ticket, List<Payment> payments, User actor) {
+        List<Map<String, Object>> breakdown = payments.stream().map(payment -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("method", payment.getMethod());
+            item.put("amount", payment.getAmount());
+            item.put("cashReceived", payment.getCashReceived());
+            item.put("changeGiven", payment.getChangeGiven());
+            return item;
+        }).toList();
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("paymentMethod", ticket.getPaymentMethod());
+        metadata.put("payments", breakdown);
+        metadata.put("total", ticket.getTotal());
+        metadata.put("actorUserId", actor.getId());
+        metadata.put("paidById", actor.getId());
+        metadata.put("paidByUsername", actor.getUsername());
+        metadata.put("originCashSessionId", ticket.getOriginCashSession() == null
+                ? null : ticket.getOriginCashSession().getId());
+        CashSession paymentSession = payments.get(0).getCashSession();
+        metadata.put("paymentCashSessionId", paymentSession.getId());
+        metadata.put("paymentCashRegisterId", paymentSession.getCashRegister().getId());
+        metadata.put("paymentCashRegisterName", paymentSession.getCashRegister().getName());
+        metadata.put("paymentSessionResponsibleId", paymentSession.getOpenedBy().getId());
+        metadata.put("paymentSessionResponsibleUsername", paymentSession.getOpenedBy().getUsername());
+        return metadata;
+    }
+
+    private record ValidatedPayment(
+            PaymentMethod method, BigDecimal amount, BigDecimal cashReceived, BigDecimal changeGiven) {}
 
     private TicketLineResponseDto toLineResponse(TicketLine line) {
         User discountAppliedBy = line.getDiscountAppliedBy();
@@ -1321,6 +1573,16 @@ public class TicketService {
         snapshot.put("commercialNumber", ticket.getCommercialNumber());
         snapshot.put("mesaId", ticket.getMesa() != null ? ticket.getMesa().getId() : null);
         snapshot.put("paymentMethod", ticket.getPaymentMethod());
+        if (ticket.getOriginCashSession() != null) {
+            CashSession origin = ticket.getOriginCashSession();
+            snapshot.put("originCashSessionId", origin.getId());
+            snapshot.put("originCashRegisterId", origin.getCashRegister().getId());
+            snapshot.put("originCashRegisterName", origin.getCashRegister().getName());
+            snapshot.put("sessionResponsibleId", origin.getOpenedBy().getId());
+            snapshot.put("sessionResponsibleUsername", origin.getOpenedBy().getUsername());
+            snapshot.put("createdById", ticket.getCreatedBy().getId());
+            snapshot.put("createdByUsername", ticket.getCreatedBy().getUsername());
+        }
         return snapshot;
     }
 
@@ -1344,6 +1606,9 @@ public class TicketService {
 
         if (from.isAfter(to)) {
             throw new BusinessRuleException("INVALID_DATE_RANGE", "La fecha 'from' no puede ser mayor que 'to'");
+        }
+        if (LocalDate.MAX.equals(to)) {
+            throw new BusinessRuleException("INVALID_DATE_RANGE", "La fecha 'to' está fuera del rango permitido");
         }
     }
 

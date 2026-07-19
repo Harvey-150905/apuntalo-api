@@ -12,6 +12,8 @@ public class MeResponseDto {
     private String username;
     private Role role;
     private TenantInfo tenant;
+    private StoreResponseDto activeStore;
+    private Long defaultStoreId;
 
     @Getter
     @Builder

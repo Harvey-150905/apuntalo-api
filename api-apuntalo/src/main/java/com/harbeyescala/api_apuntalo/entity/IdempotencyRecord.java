@@ -16,12 +16,6 @@ import java.time.LocalDateTime;
 @Entity
 @Table(
     name = "idempotency_records",
-    uniqueConstraints = {
-        @UniqueConstraint(
-            name = "uk_idempotency_scope",
-            columnNames = {"tenant_id", "user_id", "operation", "idempotency_key"}
-        )
-    },
     indexes = {
         @Index(name = "idx_idempotency_expires_at", columnList = "expires_at")
     }
@@ -39,6 +33,23 @@ public class IdempotencyRecord {
 
     @Column(name = "tenant_id", nullable = false)
     private Long tenantId;
+
+    @Column(name = "store_id")
+    private Long storeId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumns({
+            @JoinColumn(name = "store_id", referencedColumnName = "id", insertable = false, updatable = false),
+            @JoinColumn(name = "tenant_id", referencedColumnName = "negocio_id", insertable = false, updatable = false)
+    })
+    private Store store;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "scope_type", nullable = false, length = 10)
+    private com.harbeyescala.api_apuntalo.entity.enums.OperationScopeType scopeType;
+
+    @Column(name = "store_scope_legacy", nullable = false)
+    private Boolean storeScopeLegacy;
 
     @Column(name = "user_id", nullable = false)
     private Long userId;

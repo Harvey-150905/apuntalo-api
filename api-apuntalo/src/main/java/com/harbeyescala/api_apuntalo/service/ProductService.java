@@ -25,28 +25,30 @@ public class ProductService {
     private final SubcategoryRepository subcategoryRepository;
     private final CloudinaryService cloudinaryService;
     private final FileValidationService fileValidationService;
+    private final ActiveStoreContext storeContext;
 
     public ProductService(ProductRepository productRepository,
                         SubcategoryRepository subcategoryRepository,
                         CloudinaryService cloudinaryService,
-                        FileValidationService fileValidationService) {
+                        FileValidationService fileValidationService,ActiveStoreContext storeContext) {
         this.productRepository = productRepository;
         this.subcategoryRepository = subcategoryRepository;
         this.cloudinaryService = cloudinaryService;
         this.fileValidationService = fileValidationService;
+        this.storeContext=storeContext;
     }
     public ProductResponseDto save(ProductRequestDto dto, MultipartFile image) {
 
         Long negocioId = SecurityUtils.getNegocioId();
 
         // validar duplicado
-        if (productRepository.existsByNameAndNegocioId(dto.getName(), negocioId)) {
+        if (productRepository.existsByNameAndNegocioIdAndStoreId(dto.getName(), negocioId,storeContext.storeId())) {
             throw new DuplicateResourceException("Ya existe un producto con ese nombre en este negocio");
         }
 
         // obtener subcategoría
         Subcategory subcategory = subcategoryRepository
-                .findByIdAndNegocioId(dto.getSubcategoryId(), negocioId)
+                .findByIdAndNegocioIdAndStoreId(dto.getSubcategoryId(), negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Subcategoría no encontrada"));
 
         String imageUrl = null;
@@ -67,13 +69,14 @@ public class ProductService {
         Product product = Product.builder()
                 .name(dto.getName())
                 .subcategory(subcategory)
-                .price(dto.getPrice())
+                .price(MoneyPolicy.requirePositive(dto.getPrice(), "INVALID_PRODUCT_PRICE", "El precio no es válido"))
                 .description(dto.getDescription())
                 .imageUrl(imageUrl)
                 .imagePublicId(imagePublicId)
                 //.activo(dto.getActivo() != null ? dto.getActivo() : true)
                 .activo(Boolean.TRUE.equals(dto.getActivo()) || dto.getActivo() == null)
                 .negocio(new Negocio(negocioId))
+                .store(storeContext.requireStore())
                 .build();
 
         Product saved = productRepository.save(product);
@@ -86,7 +89,7 @@ public class ProductService {
 
         Long negocioId = SecurityUtils.getNegocioId();
 
-        return productRepository.findByNegocioIdAndActivoTrue(negocioId)
+        return productRepository.findByNegocioIdAndStoreIdAndActivoTrue(negocioId,storeContext.storeId())
                 .stream()
                 .map(this::mapToResponseDto)
                 .toList();
@@ -97,7 +100,7 @@ public class ProductService {
 
         Long negocioId = SecurityUtils.getNegocioId();
 
-        return productRepository.findByNegocioId(negocioId)
+        return productRepository.findByNegocioIdAndStoreId(negocioId,storeContext.storeId())
                 .stream()
                 .map(this::mapToResponseDto)
                 .toList();
@@ -109,7 +112,7 @@ public class ProductService {
         Long negocioId = SecurityUtils.getNegocioId();
 
         Product product = productRepository
-                .findByIdAndNegocioId(id, negocioId)
+                .findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Producto no encontrado"));
 
         return mapToResponseDto(product);
@@ -120,15 +123,15 @@ public class ProductService {
         Long negocioId = SecurityUtils.getNegocioId();
 
         Product product = productRepository
-                .findByIdAndNegocioId(id, negocioId)
+                .findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Producto no encontrado"));
 
-        if (productRepository.existsByNameAndNegocioIdAndIdNot(dto.getName(), negocioId, id)) {
+        if (productRepository.existsByNameAndNegocioIdAndStoreIdAndIdNot(dto.getName(), negocioId,storeContext.storeId(), id)) {
             throw new DuplicateResourceException("Ya existe un producto con ese nombre en este negocio");
         }
 
         Subcategory subcategory = subcategoryRepository
-                .findByIdAndNegocioId(dto.getSubcategoryId(), negocioId)
+                .findByIdAndNegocioIdAndStoreId(dto.getSubcategoryId(), negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Subcategoría no encontrada"));
 
         if (image != null && !image.isEmpty()) {
@@ -150,7 +153,7 @@ public class ProductService {
 
         product.setName(dto.getName());
         product.setSubcategory(subcategory);
-        product.setPrice(dto.getPrice());
+        product.setPrice(MoneyPolicy.requirePositive(dto.getPrice(), "INVALID_PRODUCT_PRICE", "El precio no es válido"));
         product.setDescription(dto.getDescription());
         product.setActivo(dto.getActivo() != null ? dto.getActivo() : product.getActivo());
 
@@ -163,7 +166,7 @@ public class ProductService {
         Long negocioId = SecurityUtils.getNegocioId();
 
         Product product = productRepository
-                .findByIdAndNegocioId(id, negocioId)
+                .findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Producto no encontrado"));
 
         if (product.getImagePublicId() != null && !product.getImagePublicId().isBlank()) {

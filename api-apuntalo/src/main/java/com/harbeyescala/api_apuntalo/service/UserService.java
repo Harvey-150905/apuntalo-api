@@ -5,7 +5,9 @@ import com.harbeyescala.api_apuntalo.dto.UserResponseDto;
 import com.harbeyescala.api_apuntalo.dto.UserUpdateDto;
 import com.harbeyescala.api_apuntalo.entity.Negocio;
 import com.harbeyescala.api_apuntalo.entity.Role;
+import com.harbeyescala.api_apuntalo.entity.Store;
 import com.harbeyescala.api_apuntalo.entity.User;
+import com.harbeyescala.api_apuntalo.exception.ConflictException;
 import com.harbeyescala.api_apuntalo.exception.DuplicateResourceException;
 import com.harbeyescala.api_apuntalo.exception.ResourceNotFoundException;
 import com.harbeyescala.api_apuntalo.repository.NegocioRepository;
@@ -26,17 +28,20 @@ public class UserService {
     private final NegocioRepository negocioRepository;
     private final PasswordEncoder passwordEncoder;
     private final CurrentUser currentUser;
+    private final UserStoreAccessService userStoreAccessService;
 
     public UserService(
             UserRepository userRepository,
             NegocioRepository negocioRepository,
             PasswordEncoder passwordEncoder,
-            CurrentUser currentUser
+            CurrentUser currentUser,
+            UserStoreAccessService userStoreAccessService
     ) {
         this.userRepository = userRepository;
         this.negocioRepository = negocioRepository;
         this.passwordEncoder = passwordEncoder;
         this.currentUser = currentUser;
+        this.userStoreAccessService = userStoreAccessService;
     }
 
     @Transactional
@@ -51,17 +56,23 @@ public class UserService {
             throw new DuplicateResourceException("Ya existe un usuario con ese username");
         }
 
+        Store primaryStore = userStoreAccessService.getPrimaryStore(negocioId);
+
         User user = User.builder()
                 .nombre(dto.getNombre())
                 .username(normalizedUsername)
                 .password(passwordEncoder.encode(dto.getPassword()))
                 .role(dto.getRole())
                 .negocio(negocio)
+                .defaultStore(primaryStore)
                 .activo(true)
                 .tokenVersion(1)
                 .build();
 
-        User savedUser = userRepository.save(user);
+        User savedUser = userRepository.saveAndFlush(user);
+        User assignedBy = userRepository.findByIdAndNegocioId(currentUser.getUserId(), negocioId)
+                .orElse(null);
+        userStoreAccessService.createPrincipalAccessForNewUser(savedUser, primaryStore, assignedBy);
 
         return mapToResponseDto(savedUser);
     }
@@ -97,6 +108,10 @@ public class UserService {
     @Transactional
     public void deleteById(Long id) {
         User user = getUserByScope(id);
+        if (userStoreAccessService.hasAnyAccess(user.getId(), user.getNegocio().getId())) {
+            throw new ConflictException(
+                    "USER_HAS_STORE_ACCESS", "No se puede eliminar un usuario con accesos a tiendas");
+        }
         userRepository.delete(user);
     }
 
@@ -121,7 +136,9 @@ public class UserService {
         }
 
         if (!Objects.equals(user.getNegocio().getId(), negocio.getId())) {
-            securitySensitiveChange = true;
+            throw new ConflictException(
+                    "USER_TENANT_CHANGE_NOT_SUPPORTED",
+                    "No se puede cambiar el negocio de un usuario con accesos a tiendas");
         }
 
         boolean targetActivo = dto.getActivo() != null ? dto.getActivo() : user.getActivo();
@@ -137,7 +154,6 @@ public class UserService {
         user.setNombre(dto.getNombre());
         user.setUsername(normalizedUsername);
         user.setRole(dto.getRole());
-        user.setNegocio(negocio);
         user.setActivo(targetActivo);
 
         if (securitySensitiveChange) {

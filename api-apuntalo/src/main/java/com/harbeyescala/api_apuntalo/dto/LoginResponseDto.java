@@ -21,6 +21,7 @@ public class LoginResponseDto {
 
     private UserSummary user;
     private TenantSummary tenant;
+    private StoreResponseDto activeStore;
 
     @Getter
     @Builder

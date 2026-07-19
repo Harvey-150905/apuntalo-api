@@ -80,8 +80,20 @@ public class Ticket {
     private Negocio negocio;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "store_id", nullable = false)
+    private Store store;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "created_by", nullable = false)
     private User createdBy;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "origin_cash_session_id", updatable = false)
+    private CashSession originCashSession;
+
+    @Column(name = "origin_session_legacy", nullable = false)
+    @Builder.Default
+    private boolean originSessionLegacy = false;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "paid_by")

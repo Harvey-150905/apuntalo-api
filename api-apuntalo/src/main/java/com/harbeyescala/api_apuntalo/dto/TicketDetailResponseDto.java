@@ -37,6 +37,9 @@ public class TicketDetailResponseDto {
     private PaymentMethod paymentMethod;
     private Long paidById;
     private String paidByUsername;
+    private CashSessionReferenceDto originCashSession;
+    private CashSessionReferenceDto paymentCashSession;
 
     private List<TicketLineResponseDto> lines;
+    private List<PaymentResponseDto> payments;
 }

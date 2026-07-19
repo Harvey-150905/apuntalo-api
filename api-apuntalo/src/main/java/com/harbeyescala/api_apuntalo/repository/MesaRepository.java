@@ -20,6 +20,11 @@ public interface MesaRepository extends JpaRepository<Mesa, Long> {
     List<Mesa> findByNegocioIdAndStatusAndActivaTrue(Long negocioId, MesaStatus status);
 
     Optional<Mesa> findByIdAndNegocioId(Long id, Long negocioId);
+    List<Mesa> findByNegocioIdAndStoreId(Long negocioId, Long storeId);
+    List<Mesa> findByNegocioIdAndStoreIdAndActivaTrue(Long negocioId, Long storeId);
+    Optional<Mesa> findByIdAndNegocioIdAndStoreId(Long id, Long negocioId, Long storeId);
+    boolean existsByNumeroAndNegocioIdAndStoreId(Integer numero, Long negocioId, Long storeId);
+    boolean existsByNumeroAndNegocioIdAndStoreIdAndIdNot(Integer numero, Long negocioId, Long storeId, Long id);
 
     boolean existsByNumeroAndNegocioId(Integer numero, Long negocioId);
 
@@ -36,4 +41,8 @@ public interface MesaRepository extends JpaRepository<Mesa, Long> {
             @Param("mesaId") Long mesaId,
             @Param("tenantId") Long tenantId
     );
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select m from Mesa m where m.id=:mesaId and m.negocio.id=:tenantId and m.store.id=:storeId")
+    Optional<Mesa> findByIdAndNegocioIdAndStoreIdForUpdate(@Param("mesaId") Long mesaId,
+      @Param("tenantId") Long tenantId,@Param("storeId") Long storeId);
 }

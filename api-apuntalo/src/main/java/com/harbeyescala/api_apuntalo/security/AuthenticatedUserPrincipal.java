@@ -13,9 +13,16 @@ public record AuthenticatedUserPrincipal(
         String username,
         Long tenantId,
         String tenantName,
+        Long activeStoreId,
         Role role,
         Integer tokenVersion
 ) {
+
+    public AuthenticatedUserPrincipal {
+        if (activeStoreId == null) {
+            throw new IllegalArgumentException("La tienda activa es obligatoria");
+        }
+    }
 
     public boolean isSuperAdmin() {
         return role == Role.SUPER_ADMIN;

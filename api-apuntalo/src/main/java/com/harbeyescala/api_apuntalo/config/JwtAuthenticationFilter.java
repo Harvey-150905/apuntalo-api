@@ -1,8 +1,6 @@
 package com.harbeyescala.api_apuntalo.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.harbeyescala.api_apuntalo.entity.Role;
-import com.harbeyescala.api_apuntalo.exception.ApiError;
 import com.harbeyescala.api_apuntalo.security.AuthenticatedUserPrincipal;
 import com.harbeyescala.api_apuntalo.security.TokenPrincipalResolver;
 import com.harbeyescala.api_apuntalo.service.JwtService;
@@ -43,12 +41,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
     private final TokenPrincipalResolver principalResolver;
-    private final ObjectMapper objectMapper;
+    private final ApiErrorWriter errorWriter;
 
-    public JwtAuthenticationFilter(JwtService jwtService, TokenPrincipalResolver principalResolver, ObjectMapper objectMapper) {
+    public JwtAuthenticationFilter(JwtService jwtService, TokenPrincipalResolver principalResolver, ApiErrorWriter errorWriter) {
         this.jwtService = jwtService;
         this.principalResolver = principalResolver;
-        this.objectMapper = objectMapper;
+        this.errorWriter = errorWriter;
     }
 
     @Override
@@ -84,7 +82,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         } catch (Exception e) {
             SecurityContextHolder.clearContext();
             log.warn("JWT rechazado en {}: {}", request.getRequestURI(), e.getClass().getSimpleName());
-            writeUnauthorized(response);
+            writeUnauthorized(request, response);
             return;
         }
 
@@ -94,8 +92,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private AuthenticatedUserPrincipal resolvePrincipal(String token) {
         Claims claims = jwtService.extractClaims(token);
 
-        Long userId = claims.get("userId", Long.class);
-        Long tenantId = claims.get("tenantId", Long.class);
+        Long userId = requiredPositiveLongClaim(claims, "userId");
+        Long tenantId = requiredPositiveLongClaim(claims, "tenantId");
+        Long storeId = requiredPositiveLongClaim(claims, "storeId");
         String roleClaim = claims.get("role", String.class);
         Integer tokenVersionClaim = claims.get("tokenVersion", Integer.class);
         String subject = claims.getSubject();
@@ -112,13 +111,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             throw new IllegalStateException("Token inválido: rol desconocido");
         }
 
-        return principalResolver.resolve(userId, tenantId, role, tokenVersionClaim);
+        return principalResolver.resolve(userId, tenantId, storeId, role, tokenVersionClaim);
     }
 
-    private void writeUnauthorized(HttpServletResponse response) throws IOException {
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        response.setCharacterEncoding("UTF-8");
-        objectMapper.writeValue(response.getWriter(), new ApiError("INVALID_TOKEN", "Token inválido o expirado"));
+    private Long requiredPositiveLongClaim(Claims claims, String name) {
+        Object raw = claims.get(name);
+        if (!(raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long)) {
+            throw new IllegalStateException("Token inválido: claim numérica inválida");
+        }
+        long value = ((Number) raw).longValue();
+        if (value <= 0) throw new IllegalStateException("Token inválido: claim numérica inválida");
+        return value;
+    }
+
+    private void writeUnauthorized(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        errorWriter.write(request, response, HttpServletResponse.SC_UNAUTHORIZED,
+                "INVALID_TOKEN", "Token inválido o expirado");
     }
 }

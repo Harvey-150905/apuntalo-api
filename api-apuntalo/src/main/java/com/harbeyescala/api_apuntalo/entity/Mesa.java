@@ -8,7 +8,7 @@ import lombok.*;
 @Table(
     name = "mesas",
     uniqueConstraints = {
-        @UniqueConstraint(columnNames = {"negocio_id", "numero"})
+        @UniqueConstraint(columnNames = {"negocio_id", "store_id", "numero"})
     }
 )
 @Getter
@@ -42,4 +42,8 @@ public class Mesa {
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "negocio_id", nullable = false)
     private Negocio negocio;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "store_id", nullable = false)
+    private Store store;
 }

@@ -18,18 +18,20 @@ import java.util.Optional;
 public class SubcategoryService {
 
     private final SubcategoryRepository subcategoryRepository;
+    private final ActiveStoreContext storeContext;
 
-    public SubcategoryService(SubcategoryRepository subcategoryRepository) {
+    public SubcategoryService(SubcategoryRepository subcategoryRepository,ActiveStoreContext storeContext) {
         this.subcategoryRepository = subcategoryRepository;
+        this.storeContext=storeContext;
     }
 
     public SubcategoryResponseDto save(SubcategoryRequestDto dto) {
         Long negocioId = SecurityUtils.getNegocioId();
 
-        if (subcategoryRepository.existsByNombreAndCategoryAndNegocioId(
+        if (subcategoryRepository.existsByNombreAndCategoryAndNegocioIdAndStoreId(
                 dto.getNombre(),
                 dto.getCategory(),
-                negocioId
+                negocioId,storeContext.storeId()
         )) {
             throw new DuplicateResourceException("La subcategoría ya existe en esa categoría");
         }
@@ -38,6 +40,7 @@ public class SubcategoryService {
                 .nombre(dto.getNombre())
                 .category(dto.getCategory())
                 .negocio(new Negocio(negocioId)) // 👈 IMPORTANTE
+                .store(storeContext.requireStore())
                 .build();
 
         return mapToResponseDto(subcategoryRepository.save(subcategory));
@@ -46,7 +49,7 @@ public class SubcategoryService {
     public List<SubcategoryResponseDto> findAll() {
         Long negocioId = SecurityUtils.getNegocioId();
 
-        return subcategoryRepository.findByNegocioId(negocioId)
+        return subcategoryRepository.findByNegocioIdAndStoreId(negocioId,storeContext.storeId())
                 .stream()
                 .map(this::mapToResponseDto)
                 .toList();
@@ -55,7 +58,7 @@ public class SubcategoryService {
     public Optional<SubcategoryResponseDto> findById(Long id) {
         Long negocioId = SecurityUtils.getNegocioId();
 
-        return subcategoryRepository.findByIdAndNegocioId(id, negocioId)
+        return subcategoryRepository.findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .map(this::mapToResponseDto);
     }
 
@@ -63,7 +66,7 @@ public class SubcategoryService {
         Long negocioId = SecurityUtils.getNegocioId();
 
         Subcategory subcategory = subcategoryRepository
-                .findByIdAndNegocioId(id, negocioId)
+                .findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Subcategoría no encontrada"));
 
         subcategoryRepository.delete(subcategory);
@@ -80,13 +83,13 @@ public class SubcategoryService {
         Long negocioId = SecurityUtils.getNegocioId();
 
         Subcategory subcategory = subcategoryRepository
-                .findByIdAndNegocioId(id, negocioId)
+                .findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Subcategoría no encontrada"));
 
-        if (subcategoryRepository.existsByNombreAndCategoryAndNegocioIdAndIdNot(
+        if (subcategoryRepository.existsByNombreAndCategoryAndNegocioIdAndStoreIdAndIdNot(
                 dto.getNombre(),
                 dto.getCategory(),
-                negocioId,
+                negocioId,storeContext.storeId(),
                 id
         )) {
             throw new DuplicateResourceException("La subcategoría ya existe en esa categoría");

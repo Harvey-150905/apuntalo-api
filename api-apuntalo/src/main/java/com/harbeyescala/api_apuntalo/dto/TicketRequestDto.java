@@ -12,6 +12,10 @@ public class TicketRequestDto {
     @Positive(message = "La mesa debe ser un id válido")
     private Long mesaId;
 
+    @NotNull(message = "La sesión de origen es obligatoria")
+    @Positive(message = "La sesión de origen debe ser un id válido")
+    private Long originCashSessionId;
+
     @Size(max = 500, message = "Las notas no pueden superar los 500 caracteres")
     private String notes;
 }

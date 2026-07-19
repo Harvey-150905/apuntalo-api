@@ -32,7 +32,7 @@ public interface TicketLineRepository extends JpaRepository<TicketLine, Long> {
         WHERE t.negocio.id = :negocioId
           AND t.status = :ticketStatus
           AND tl.status = :lineStatus
-          AND t.paidAt BETWEEN :from AND :to
+          AND t.paidAt >= :from AND t.paidAt < :to
         GROUP BY tl.productId, tl.productNameSnapshot
         ORDER BY COALESCE(SUM(tl.subtotal), 0) DESC
     """)

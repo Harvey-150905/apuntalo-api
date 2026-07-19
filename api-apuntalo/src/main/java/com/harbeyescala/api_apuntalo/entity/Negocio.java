@@ -34,6 +34,10 @@ public class Negocio {
     @Column(nullable = false)
     private Boolean activo = true;
 
+    @Builder.Default
+    @Column(name = "cash_reconciliation_enabled", nullable = false)
+    private Boolean cashReconciliationEnabled = false;
+
     public Negocio(Long id) {
         this.id = id;
     }

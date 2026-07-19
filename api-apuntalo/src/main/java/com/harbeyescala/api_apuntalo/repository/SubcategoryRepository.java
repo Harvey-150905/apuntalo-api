@@ -10,6 +10,10 @@ import java.util.Optional;
 public interface SubcategoryRepository extends JpaRepository<Subcategory, Long> {
 
     List<Subcategory> findByNegocioId(Long negocioId);
+    List<Subcategory> findByNegocioIdAndStoreId(Long negocioId,Long storeId);
+    Optional<Subcategory> findByIdAndNegocioIdAndStoreId(Long id,Long negocioId,Long storeId);
+    boolean existsByNombreAndCategoryAndNegocioIdAndStoreId(String n,Category c,Long tenant,Long store);
+    boolean existsByNombreAndCategoryAndNegocioIdAndStoreIdAndIdNot(String n,Category c,Long tenant,Long store,Long id);
 
     Optional<Subcategory> findByIdAndNegocioId(Long id, Long negocioId);
 

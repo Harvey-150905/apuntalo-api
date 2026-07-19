@@ -36,6 +36,14 @@ public class CurrentUser {
         return getPrincipal().tenantId();
     }
 
+    public Long requireCurrentStoreId() {
+        Long storeId = getPrincipal().activeStoreId();
+        if (storeId == null) {
+            throw new UnauthorizedException("INVALID_TOKEN", "Token inválido o expirado");
+        }
+        return storeId;
+    }
+
     public String getUsername() {
         return getPrincipal().username();
     }

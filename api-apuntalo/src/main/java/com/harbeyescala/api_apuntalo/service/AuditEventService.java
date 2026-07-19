@@ -7,7 +7,7 @@ import com.harbeyescala.api_apuntalo.dto.PageResponseDto;
 import com.harbeyescala.api_apuntalo.entity.AuditEvent;
 import com.harbeyescala.api_apuntalo.entity.enums.AuditAction;
 import com.harbeyescala.api_apuntalo.entity.enums.AuditEntityType;
-import com.harbeyescala.api_apuntalo.exception.BadRequestException;
+import com.harbeyescala.api_apuntalo.entity.enums.OperationScopeType;
 import com.harbeyescala.api_apuntalo.repository.AuditEventRepository;
 import com.harbeyescala.api_apuntalo.security.AuditRequestContext;
 import com.harbeyescala.api_apuntalo.security.CurrentUser;
@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,17 +49,23 @@ public class AuditEventService {
     private final AuditRequestContext requestContext;
     private final CurrentUser currentUser;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
+    private final ActiveStoreContext storeContext;
 
     public AuditEventService(
             AuditEventRepository repository,
             AuditRequestContext requestContext,
             CurrentUser currentUser,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            Clock clock,
+            ActiveStoreContext storeContext
     ) {
         this.repository = repository;
         this.requestContext = requestContext;
         this.currentUser = currentUser;
         this.objectMapper = objectMapper;
+        this.clock = clock;
+        this.storeContext = storeContext;
     }
 
     @Transactional
@@ -100,13 +107,17 @@ public class AuditEventService {
             int page,
             int size
     ) {
-        validatePagination(page, size);
+        PaginationPolicy.validate(page, size);
 
         Long tenantId = currentUser.getTenantId();
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "occurredAt"));
+        Pageable pageable = PageRequest.of(page, size,
+                Sort.by(Sort.Order.desc("occurredAt"), Sort.Order.desc("id")));
 
         Specification<AuditEvent> specification = (root, query, criteriaBuilder) ->
                 criteriaBuilder.equal(root.get("negocioId"), tenantId);
+        Long activeStoreId = storeContext.requireStore().getId();
+        specification = specification.and((root, query, cb) -> cb.or(
+                cb.equal(root.get("storeId"), activeStoreId), cb.isNull(root.get("storeId"))));
 
         if (entityType != null) {
             specification = specification.and((root, query, cb) -> cb.equal(root.get("entityType"), entityType));
@@ -146,19 +157,13 @@ public class AuditEventService {
         );
     }
 
-    private void validatePagination(int page, int size) {
-        if (page < 0) {
-            throw new BadRequestException("INVALID_PAGE", "La página no puede ser negativa");
-        }
-        if (size < 1 || size > 100) {
-            throw new BadRequestException("INVALID_PAGE_SIZE", "El tamaño de página debe estar entre 1 y 100");
-        }
-    }
-
     private AuditEventResponseDto toResponseDto(AuditEvent event) {
         return AuditEventResponseDto.builder()
                 .id(event.getId())
                 .negocioId(event.getNegocioId())
+                .storeId(event.getStoreId())
+                .storeScoped(event.getScopeType() == OperationScopeType.STORE)
+                .legacyScope(event.getStoreScopeLegacy())
                 .userId(event.getUserId())
                 .entityType(event.getEntityType())
                 .entityId(event.getEntityId())
@@ -190,16 +195,21 @@ public class AuditEventService {
             String errorCode
     ) {
         Long tenantId = currentUser.getTenantId();
+        OperationScopeType scopeType = action.scopeType();
+        Long storeId = scopeType == OperationScopeType.STORE ? storeContext.requireStore().getId() : null;
 
         return AuditEvent.builder()
                 .negocioId(tenantId)
+                .storeId(storeId)
+                .scopeType(scopeType)
+                .storeScopeLegacy(false)
                 .userId(safeUserId())
                 .entityType(entityType)
                 .entityId(entityId)
                 .action(action)
                 .previousStateJson(toSafeJson(previousState))
                 .newStateJson(toSafeJson(newState))
-                .occurredAt(LocalDateTime.now())
+                .occurredAt(LocalDateTime.now(clock))
                 .idempotencyKey(requestContext.getIdempotencyKey())
                 .requestId(requestContext.getRequestId())
                 .success(success)

@@ -2,10 +2,16 @@ package com.harbeyescala.api_apuntalo.service;
 
 import com.harbeyescala.api_apuntalo.dto.LoginRequestDto;
 import com.harbeyescala.api_apuntalo.dto.LoginResponseDto;
+import com.harbeyescala.api_apuntalo.dto.StoreResponseDto;
+import com.harbeyescala.api_apuntalo.dto.SwitchStoreResponseDto;
+import com.harbeyescala.api_apuntalo.dto.UserStoreAccessResponseDto;
 import com.harbeyescala.api_apuntalo.entity.Negocio;
+import com.harbeyescala.api_apuntalo.entity.Store;
 import com.harbeyescala.api_apuntalo.entity.User;
 import com.harbeyescala.api_apuntalo.exception.UnauthorizedException;
 import com.harbeyescala.api_apuntalo.repository.UserRepository;
+import com.harbeyescala.api_apuntalo.repository.StoreRepository;
+import com.harbeyescala.api_apuntalo.security.CurrentUser;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,13 +24,22 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final UserStoreAccessService accessService;
+    private final StoreRepository storeRepository;
+    private final CurrentUser currentUser;
 
     public AuthService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
-                       JwtService jwtService) {
+                       JwtService jwtService,
+                       UserStoreAccessService accessService,
+                       StoreRepository storeRepository,
+                       CurrentUser currentUser) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.accessService = accessService;
+        this.storeRepository = storeRepository;
+        this.currentUser = currentUser;
     }
 
     /**
@@ -55,8 +70,16 @@ public class AuthService {
 
         Long tenantId = negocio.getId();
         String tenantName = negocio.getNombre();
+        Store defaultStore = user.getDefaultStore();
+        Store activeStore = defaultStore == null ? null
+                : accessService.findValidActiveStore(user.getId(), defaultStore.getId(), tenantId);
+        if (activeStore == null) {
+            throw new UnauthorizedException(
+                    "ACTIVE_STORE_NOT_AVAILABLE", "La tienda activa no está disponible");
+        }
 
-        String token = jwtService.generateToken(user);
+        String token = jwtService.generateToken(
+                user, tenantId, activeStore.getId(), user.getTokenVersion());
 
         return LoginResponseDto.builder()
                 .token(token)
@@ -72,7 +95,57 @@ public class AuthService {
                         .id(tenantId)
                         .name(tenantName)
                         .build())
+                .activeStore(toStoreResponse(activeStore))
                 .build();
+    }
+
+    @Transactional(readOnly = true)
+    public SwitchStoreResponseDto switchStore(Long requestedStoreId) {
+        Long userId = currentUser.getUserId();
+        Long tenantId = currentUser.getTenantId();
+        Store store = accessService.resolveStoreForSwitch(userId, requestedStoreId, tenantId);
+        User user = userRepository.findByIdAndNegocioId(userId, tenantId)
+                .orElseThrow(() -> new UnauthorizedException("INVALID_TOKEN", "Token inválido o expirado"));
+        String token = jwtService.generateToken(
+                user, tenantId, store.getId(), user.getTokenVersion());
+        return SwitchStoreResponseDto.builder()
+                .token(token)
+                .accessToken(token)
+                .tokenType("Bearer")
+                .expiresIn(jwtService.getExpirationSeconds())
+                .activeStore(toStoreResponse(store))
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public java.util.List<UserStoreAccessResponseDto> authorizedStores() {
+        return accessService.listAuthorizedActiveStores(
+                currentUser.getUserId(), currentUser.getTenantId(), currentUser.requireCurrentStoreId());
+    }
+
+    @Transactional(readOnly = true)
+    public StoreResponseDto currentActiveStore() {
+        Store store = storeRepository.findByIdAndNegocioId(
+                        currentUser.requireCurrentStoreId(), currentUser.getTenantId())
+                .orElseThrow(() -> new UnauthorizedException("INVALID_TOKEN", "Token inválido o expirado"));
+        return toStoreResponse(store);
+    }
+
+    @Transactional(readOnly = true)
+    public Long currentDefaultStoreId() {
+        return userRepository.findWithDefaultStoreByIdAndNegocioId(
+                        currentUser.getUserId(), currentUser.getTenantId())
+                .map(User::getDefaultStore).map(Store::getId)
+                .orElseThrow(() -> new UnauthorizedException("INVALID_TOKEN", "Token inválido o expirado"));
+    }
+
+    private StoreResponseDto toStoreResponse(Store store) {
+        return StoreResponseDto.builder()
+                .id(store.getId()).name(store.getName()).code(store.getCode())
+                .timezone(store.getTimezone()).active(store.getActive())
+                .primaryStore(store.getPrimaryStore()).address(store.getAddress())
+                .city(store.getCity()).countryCode(store.getCountryCode())
+                .cashReconciliationEnabled(store.getCashReconciliationEnabled()).build();
     }
 
     public static String normalizeUsername(String username) {

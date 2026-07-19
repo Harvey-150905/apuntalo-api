@@ -30,6 +30,10 @@ public class TicketLine {
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "ticket_id", nullable = false)
     private Ticket ticket;
+    @ManyToOne(fetch=FetchType.LAZY,optional=false) @JoinColumn(name="store_id",nullable=false)
+    private Store store;
+    @ManyToOne(fetch=FetchType.LAZY,optional=false) @JoinColumn(name="negocio_id",nullable=false)
+    private Negocio negocio;
 
     @Column(name = "product_id", nullable = false)
     private Long productId;

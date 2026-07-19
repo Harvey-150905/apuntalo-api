@@ -36,6 +36,23 @@ public class AuditEvent {
     @Column(name = "negocio_id", nullable = false)
     private Long negocioId;
 
+    @Column(name = "store_id")
+    private Long storeId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumns({
+            @JoinColumn(name = "store_id", referencedColumnName = "id", insertable = false, updatable = false),
+            @JoinColumn(name = "negocio_id", referencedColumnName = "negocio_id", insertable = false, updatable = false)
+    })
+    private Store store;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "scope_type", nullable = false, length = 10)
+    private com.harbeyescala.api_apuntalo.entity.enums.OperationScopeType scopeType;
+
+    @Column(name = "store_scope_legacy", nullable = false)
+    private Boolean storeScopeLegacy;
+
     @Column(name = "user_id")
     private Long userId;
 

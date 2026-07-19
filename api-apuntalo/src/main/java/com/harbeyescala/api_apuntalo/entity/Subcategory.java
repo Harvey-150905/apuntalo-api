@@ -9,7 +9,7 @@ import jakarta.validation.constraints.NotNull;
 @Table(
     name = "subcategories",
     uniqueConstraints = {
-        @UniqueConstraint(columnNames = {"negocio_id", "nombre", "category"})
+        @UniqueConstraint(columnNames = {"negocio_id", "store_id", "nombre", "category"})
     }
 )
 @Getter
@@ -30,6 +30,8 @@ public class Subcategory {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "negocio_id", nullable = false)
     private Negocio negocio;
+    @ManyToOne(fetch=FetchType.LAZY,optional=false) @JoinColumn(name="store_id",nullable=false)
+    private Store store;
 
     @NotNull(message = "La categoría es obligatoria")
     @Enumerated(EnumType.STRING)

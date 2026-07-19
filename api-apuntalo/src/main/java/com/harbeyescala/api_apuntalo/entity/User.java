@@ -52,6 +52,11 @@ public class User {
     @JoinColumn(name = "negocio_id", nullable = false)
     private Negocio negocio;
 
+    @NotNull(message = "La tienda predeterminada es obligatoria")
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "default_store_id", nullable = false)
+    private Store defaultStore;
+
     @Builder.Default
     @Column(nullable = false)
     private Boolean activo = true;

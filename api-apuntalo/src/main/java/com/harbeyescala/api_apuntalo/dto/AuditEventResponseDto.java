@@ -17,6 +17,9 @@ public class AuditEventResponseDto {
 
     private Long id;
     private Long negocioId;
+    private Long storeId;
+    private Boolean storeScoped;
+    private Boolean legacyScope;
     private Long userId;
     private AuditEntityType entityType;
     private Long entityId;

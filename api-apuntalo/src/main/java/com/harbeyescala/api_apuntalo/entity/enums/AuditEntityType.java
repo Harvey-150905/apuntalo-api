@@ -5,5 +5,8 @@ package com.harbeyescala.api_apuntalo.entity.enums;
  */
 public enum AuditEntityType {
     TICKET,
-    TICKET_LINE
+    TICKET_LINE,
+    NEGOCIO,
+    CASH_REGISTER,
+    CASH_SESSION
 }
