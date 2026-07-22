@@ -8,5 +8,12 @@ public enum AuditEntityType {
     TICKET_LINE,
     NEGOCIO,
     CASH_REGISTER,
-    CASH_SESSION
+    CASH_SESSION,
+    // Fase 9: administración multi-tienda
+    STORE,
+    USER,
+    USER_STORE_ACCESS,
+    MESA,
+    SUBCATEGORY,
+    PRODUCT
 }

@@ -92,6 +92,56 @@ public class AuditEventService {
     }
 
     /**
+     * Registra un evento de éxito con {@code tenantId}/{@code storeId}
+     * explícitos, sin derivarlos del principal autenticado (Fase 9). Es
+     * imprescindible para el provisionamiento de plataforma, donde el tenant
+     * del JWT (el negocio del SUPER_ADMIN) es distinto del tenant recién
+     * creado, y para las operaciones de administración cross-tenant de
+     * SUPER_ADMIN sobre otro negocio.
+     *
+     * <p>El actor ({@code user_id}) sigue siendo el usuario autenticado, que
+     * puede ser un SUPER_ADMIN de plataforma perteneciente a otro negocio: la
+     * FK {@code fk_audit_events_user} referencia únicamente {@code users(id)},
+     * por lo que es válido. Para acciones {@link OperationScopeType#TENANT} el
+     * {@code storeId} se ignora (se guarda {@code null}); para acciones
+     * {@link OperationScopeType#STORE} el {@code storeId} debe pertenecer al
+     * {@code tenantId} indicado (FK compuesta tenant-safe).
+     */
+    @Transactional
+    public void recordSuccessForTenant(
+            Long tenantId,
+            Long storeId,
+            AuditEntityType entityType,
+            Long entityId,
+            AuditAction action,
+            Map<String, Object> previousState,
+            Map<String, Object> newState,
+            Map<String, Object> metadata
+    ) {
+        OperationScopeType scopeType = action.scopeType();
+        Long effectiveStoreId = scopeType == OperationScopeType.STORE ? storeId : null;
+        AuditEvent event = AuditEvent.builder()
+                .negocioId(tenantId)
+                .storeId(effectiveStoreId)
+                .scopeType(scopeType)
+                .storeScopeLegacy(false)
+                .userId(safeUserId())
+                .entityType(entityType)
+                .entityId(entityId)
+                .action(action)
+                .previousStateJson(toSafeJson(previousState))
+                .newStateJson(toSafeJson(newState))
+                .occurredAt(LocalDateTime.now(clock))
+                .idempotencyKey(requestContext.getIdempotencyKey())
+                .requestId(requestContext.getRequestId())
+                .success(true)
+                .errorCode(null)
+                .metadataJson(toSafeJson(metadata))
+                .build();
+        repository.save(event);
+    }
+
+    /**
      * Listado filtrado y paginado para {@code GET /api/admin/audit-events}
      * (Fase 5.3), siempre acotado al tenant del usuario autenticado.
      */

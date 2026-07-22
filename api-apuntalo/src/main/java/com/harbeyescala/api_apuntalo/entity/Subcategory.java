@@ -37,4 +37,13 @@ public class Subcategory {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private Category category;
+
+    /**
+     * Fase 9 (F9.7): reemplaza el borrado físico. {@code false} equivale a
+     * la subcategoría "eliminada" pero conserva su historia y las
+     * referencias de productos existentes.
+     */
+    @Builder.Default
+    @Column(nullable = false)
+    private Boolean activo = true;
 }

@@ -6,6 +6,8 @@ import com.harbeyescala.api_apuntalo.dto.ProductUpdateDto;
 import com.harbeyescala.api_apuntalo.entity.Negocio;
 import com.harbeyescala.api_apuntalo.entity.Product;
 import com.harbeyescala.api_apuntalo.entity.Subcategory;
+import com.harbeyescala.api_apuntalo.entity.enums.AuditAction;
+import com.harbeyescala.api_apuntalo.entity.enums.AuditEntityType;
 import com.harbeyescala.api_apuntalo.exception.DuplicateResourceException;
 import com.harbeyescala.api_apuntalo.exception.ResourceNotFoundException;
 import com.harbeyescala.api_apuntalo.repository.ProductRepository;
@@ -18,6 +20,13 @@ import java.util.Map;
 
 import java.util.List;
 
+/**
+ * CRUD de productos de la Store activa. Fase 9 (F9.7): las
+ * altas/modificaciones/(des)activaciones quedan auditadas. El borrado ya
+ * era un soft-delete (se conserva por compatibilidad, delega en
+ * {@link #setActive(Long, boolean)}); {@code PATCH /api/products/{id}/status}
+ * es la vía recomendada para activar/desactivar.
+ */
 @Service
 public class ProductService {
 
@@ -25,18 +34,23 @@ public class ProductService {
     private final SubcategoryRepository subcategoryRepository;
     private final CloudinaryService cloudinaryService;
     private final FileValidationService fileValidationService;
+    private final AuditEventService auditEventService;
     private final ActiveStoreContext storeContext;
 
     public ProductService(ProductRepository productRepository,
                         SubcategoryRepository subcategoryRepository,
                         CloudinaryService cloudinaryService,
-                        FileValidationService fileValidationService,ActiveStoreContext storeContext) {
+                        FileValidationService fileValidationService,
+                        AuditEventService auditEventService,
+                        ActiveStoreContext storeContext) {
         this.productRepository = productRepository;
         this.subcategoryRepository = subcategoryRepository;
         this.cloudinaryService = cloudinaryService;
         this.fileValidationService = fileValidationService;
+        this.auditEventService = auditEventService;
         this.storeContext=storeContext;
     }
+    @Transactional
     public ProductResponseDto save(ProductRequestDto dto, MultipartFile image) {
 
         Long negocioId = SecurityUtils.getNegocioId();
@@ -81,6 +95,9 @@ public class ProductService {
 
         Product saved = productRepository.save(product);
 
+        auditEventService.recordSuccess(AuditEntityType.PRODUCT, saved.getId(), AuditAction.PRODUCT_CREATED,
+                null, Map.of("name", saved.getName(), "price", saved.getPrice(), "activo", saved.getActivo()));
+
         return mapToResponseDto(saved);
     }
 
@@ -118,6 +135,7 @@ public class ProductService {
         return mapToResponseDto(product);
     }
 
+    @Transactional
     public ProductResponseDto update(Long id, ProductUpdateDto dto, MultipartFile image) {
 
         Long negocioId = SecurityUtils.getNegocioId();
@@ -133,6 +151,9 @@ public class ProductService {
         Subcategory subcategory = subcategoryRepository
                 .findByIdAndNegocioIdAndStoreId(dto.getSubcategoryId(), negocioId,storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Subcategoría no encontrada"));
+
+        Map<String, Object> before = Map.of("name", product.getName(), "price", product.getPrice(),
+                "activo", product.getActivo());
 
         if (image != null && !image.isEmpty()) {
             fileValidationService.validateImage(image);
@@ -159,25 +180,54 @@ public class ProductService {
 
         Product updated = productRepository.save(product);
 
+        auditEventService.recordSuccess(AuditEntityType.PRODUCT, updated.getId(), AuditAction.PRODUCT_UPDATED,
+                before, Map.of("name", updated.getName(), "price", updated.getPrice(), "activo", updated.getActivo()));
+
         return mapToResponseDto(updated);
     }
-    public void delete(Long id) {
 
+    /**
+     * Activa/desactiva un producto (Fase 9, F9.7). Al desactivar, libera la
+     * imagen en Cloudinary (mismo comportamiento que el antiguo borrado).
+     */
+    @Transactional
+    public ProductResponseDto setActive(Long id, boolean active) {
         Long negocioId = SecurityUtils.getNegocioId();
 
         Product product = productRepository
-                .findByIdAndNegocioIdAndStoreId(id, negocioId,storeContext.storeId())
+                .findByIdAndNegocioIdAndStoreId(id, negocioId, storeContext.storeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Producto no encontrado"));
 
-        if (product.getImagePublicId() != null && !product.getImagePublicId().isBlank()) {
+        boolean previous = Boolean.TRUE.equals(product.getActivo());
+        if (previous == active) {
+            return mapToResponseDto(product);
+        }
+
+        if (!active && product.getImagePublicId() != null && !product.getImagePublicId().isBlank()) {
             cloudinaryService.deleteImage(product.getImagePublicId());
             product.setImageUrl(null);
             product.setImagePublicId(null);
         }
 
-        product.setActivo(false);
+        product.setActivo(active);
+        Product saved = productRepository.save(product);
 
-        productRepository.save(product);
+        auditEventService.recordSuccess(AuditEntityType.PRODUCT, id,
+                active ? AuditAction.PRODUCT_ACTIVATED : AuditAction.PRODUCT_DEACTIVATED,
+                Map.of("activo", previous), Map.of("activo", active));
+
+        return mapToResponseDto(saved);
+    }
+
+    /**
+     * @deprecated Fase 9 (F9.7): usa {@link #setActive(Long, boolean)} vía
+     * {@code PATCH /api/products/{id}/status}. Se conserva por
+     * compatibilidad con el endpoint {@code DELETE} existente (soft-delete).
+     */
+    @Deprecated
+    @Transactional
+    public void delete(Long id) {
+        setActive(id, false);
     }
 
     private ProductResponseDto mapToResponseDto(Product product) {

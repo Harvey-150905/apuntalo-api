@@ -1,5 +1,6 @@
 package com.harbeyescala.api_apuntalo.controller;
 
+import com.harbeyescala.api_apuntalo.dto.ActiveStatusRequestDto;
 import com.harbeyescala.api_apuntalo.dto.SubcategoryRequestDto;
 import com.harbeyescala.api_apuntalo.dto.SubcategoryResponseDto;
 import com.harbeyescala.api_apuntalo.service.SubcategoryService;
@@ -49,5 +50,16 @@ public class SubcategoryController {
     ) {
         SubcategoryResponseDto updatedSubcategory = subcategoryService.update(id, dto);
         return ResponseEntity.ok(updatedSubcategory);
+    }
+
+    /**
+     * Fase 9 (F9.7): activa/desactiva una subcategoría. Sustituye al borrado físico.
+     */
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<SubcategoryResponseDto> setStatus(
+            @PathVariable Long id,
+            @Valid @RequestBody ActiveStatusRequestDto dto
+    ) {
+        return ResponseEntity.ok(subcategoryService.setActive(id, dto.getActive()));
     }
 }

@@ -62,6 +62,16 @@ public class SecurityConfig {
                 .requestMatchers("/api/public/negocios").permitAll()
                 .requestMatchers("/api/auth/me").authenticated()
 
+                // --- Fase 9: rutas de plataforma (solo SUPER_ADMIN), antes que las generales ---
+                .requestMatchers("/api/platform", "/api/platform/**")
+                    .hasRole("SUPER_ADMIN")
+
+                // --- Fase 9: administración multi-tienda (SUPER_ADMIN / ADMIN) ---
+                .requestMatchers("/api/admin/stores", "/api/admin/stores/**")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN")
+                .requestMatchers("/api/admin/users", "/api/admin/users/**")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN")
+
                 .requestMatchers("/api/admin/cash-management", "/api/admin/cash-management/**")
                     .hasAnyRole("SUPER_ADMIN", "ADMIN")
                 .requestMatchers("/api/admin/cash-reconciliation", "/api/admin/cash-reconciliation/**")

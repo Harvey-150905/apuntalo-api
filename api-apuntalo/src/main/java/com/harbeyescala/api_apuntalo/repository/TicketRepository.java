@@ -166,6 +166,10 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
     boolean existsByMesaIdAndNegocioIdAndStatus(Long mesaId, Long negocioId, TicketStatus status);
     boolean existsByMesaIdAndNegocioIdAndStoreIdAndStatus(Long mesaId,Long negocioId,Long storeId,TicketStatus status);
 
+    // Fase 9: guardas de desactivación (negocio/Store) por tickets abiertos.
+    boolean existsByNegocioIdAndStatus(Long negocioId, TicketStatus status);
+    boolean existsByNegocioIdAndStoreIdAndStatus(Long negocioId, Long storeId, TicketStatus status);
+
     /**
      * Carga el ticket bajo bloqueo pesimista de escritura para cualquier
      * operación que vaya a leer/mutar su estado o total (Fase 3.3).

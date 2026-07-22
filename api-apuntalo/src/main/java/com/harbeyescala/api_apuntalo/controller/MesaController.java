@@ -1,5 +1,6 @@
 package com.harbeyescala.api_apuntalo.controller;
 
+import com.harbeyescala.api_apuntalo.dto.ActiveStatusRequestDto;
 import com.harbeyescala.api_apuntalo.dto.MesaRequestDto;
 import com.harbeyescala.api_apuntalo.dto.MesaResponseDto;
 import com.harbeyescala.api_apuntalo.service.MesaService;
@@ -49,5 +50,13 @@ public class MesaController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable Long id) {
         mesaService.delete(id);
+    }
+
+    /**
+     * Fase 9 (F9.6): activa/desactiva una mesa. Sustituye al borrado físico.
+     */
+    @PatchMapping("/{id}/status")
+    public MesaResponseDto setStatus(@PathVariable Long id, @Valid @RequestBody ActiveStatusRequestDto dto) {
+        return mesaService.setActive(id, dto.getActive());
     }
 }

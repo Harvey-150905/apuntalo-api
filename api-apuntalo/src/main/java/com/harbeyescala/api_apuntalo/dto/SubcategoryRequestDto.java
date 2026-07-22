@@ -15,4 +15,6 @@ public class SubcategoryRequestDto {
 
     @NotNull(message = "La categoría es obligatoria")
     private Category category;
+
+    private Boolean activo;
 }

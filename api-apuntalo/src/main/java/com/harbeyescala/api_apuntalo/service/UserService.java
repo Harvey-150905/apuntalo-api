@@ -105,14 +105,20 @@ public class UserService {
                 .map(this::mapToResponseDto);
     }
 
+    /**
+     * @deprecated Fase 9 (F9.4): el borrado físico de usuarios queda
+     * deshabilitado por conservación de historia. Usa la desactivación en
+     * {@code PATCH /api/admin/users/{id}/status}. Se mantiene el endpoint por
+     * compatibilidad, pero rechaza siempre la operación.
+     */
+    @Deprecated
     @Transactional
     public void deleteById(Long id) {
-        User user = getUserByScope(id);
-        if (userStoreAccessService.hasAnyAccess(user.getId(), user.getNegocio().getId())) {
-            throw new ConflictException(
-                    "USER_HAS_STORE_ACCESS", "No se puede eliminar un usuario con accesos a tiendas");
-        }
-        userRepository.delete(user);
+        // Se resuelve por scope para devolver 404 si el recurso no es visible.
+        getUserByScope(id);
+        throw new ConflictException(
+                "USER_PHYSICAL_DELETE_DISABLED",
+                "El borrado físico de usuarios está deshabilitado; usa la desactivación");
     }
 
     @Transactional

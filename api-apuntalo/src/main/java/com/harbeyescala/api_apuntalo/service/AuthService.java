@@ -8,7 +8,10 @@ import com.harbeyescala.api_apuntalo.dto.UserStoreAccessResponseDto;
 import com.harbeyescala.api_apuntalo.entity.Negocio;
 import com.harbeyescala.api_apuntalo.entity.Store;
 import com.harbeyescala.api_apuntalo.entity.User;
+import com.harbeyescala.api_apuntalo.entity.enums.CashSessionStatus;
+import com.harbeyescala.api_apuntalo.exception.ConflictException;
 import com.harbeyescala.api_apuntalo.exception.UnauthorizedException;
+import com.harbeyescala.api_apuntalo.repository.CashSessionRepository;
 import com.harbeyescala.api_apuntalo.repository.UserRepository;
 import com.harbeyescala.api_apuntalo.repository.StoreRepository;
 import com.harbeyescala.api_apuntalo.security.CurrentUser;
@@ -26,6 +29,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final UserStoreAccessService accessService;
     private final StoreRepository storeRepository;
+    private final CashSessionRepository cashSessionRepository;
     private final CurrentUser currentUser;
 
     public AuthService(UserRepository userRepository,
@@ -33,12 +37,14 @@ public class AuthService {
                        JwtService jwtService,
                        UserStoreAccessService accessService,
                        StoreRepository storeRepository,
+                       CashSessionRepository cashSessionRepository,
                        CurrentUser currentUser) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.accessService = accessService;
         this.storeRepository = storeRepository;
+        this.cashSessionRepository = cashSessionRepository;
         this.currentUser = currentUser;
     }
 
@@ -99,10 +105,21 @@ public class AuthService {
                 .build();
     }
 
+    /**
+     * Fase 9 (F9.8): el responsable de una sesión de caja OPEN no puede
+     * cambiar de Store hasta cerrarla (contrato F9 §7).
+     */
     @Transactional(readOnly = true)
     public SwitchStoreResponseDto switchStore(Long requestedStoreId) {
         Long userId = currentUser.getUserId();
         Long tenantId = currentUser.getTenantId();
+
+        if (cashSessionRepository.existsByOpenedByIdAndNegocioIdAndStatus(
+                userId, tenantId, CashSessionStatus.OPEN)) {
+            throw new ConflictException("OPEN_CASH_SESSION_PREVENTS_STORE_SWITCH",
+                    "No puedes cambiar de tienda mientras tengas una sesión de caja abierta");
+        }
+
         Store store = accessService.resolveStoreForSwitch(userId, requestedStoreId, tenantId);
         User user = userRepository.findByIdAndNegocioId(userId, tenantId)
                 .orElseThrow(() -> new UnauthorizedException("INVALID_TOKEN", "Token inválido o expirado"));

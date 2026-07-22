@@ -13,4 +13,5 @@ public class SubcategoryResponseDto {
     private Long id;
     private String nombre;
     private Category category;
+    private Boolean activo;
 }
