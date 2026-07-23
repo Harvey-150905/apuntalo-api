@@ -33,6 +33,7 @@ import com.harbeyescala.api_apuntalo.dto.UserSalesSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.ProductSalesSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.DailySalesSummaryDto;
 import com.harbeyescala.api_apuntalo.dto.AverageTicketSummaryDto;
+import com.harbeyescala.api_apuntalo.entity.enums.PaymentMethod;
 import com.harbeyescala.api_apuntalo.service.IdempotencyService;
 import com.harbeyescala.api_apuntalo.service.TicketService;
 
@@ -199,10 +200,15 @@ public class TicketController {
         @RequestParam LocalDate from,
         @RequestParam LocalDate to,
         @RequestParam(defaultValue = "0") int page,
-        @RequestParam(defaultValue = "10") int size
+        @RequestParam(defaultValue = "10") int size,
+        @RequestParam(required = false) PaymentMethod paymentMethod,
+        @RequestParam(required = false) Long userId,
+        @RequestParam(required = false) Long mesaId,
+        @RequestParam(required = false) Long commercialNumber
     ) {
         return ResponseEntity.ok(
-            ticketService.findPaidTicketsPaged(from, to, page, size)
+            ticketService.findPaidTicketsPaged(
+                    from, to, page, size, paymentMethod, userId, mesaId, commercialNumber)
         );
     }
 

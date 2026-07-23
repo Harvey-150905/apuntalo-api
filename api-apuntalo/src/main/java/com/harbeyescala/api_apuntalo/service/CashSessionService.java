@@ -20,7 +20,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
-import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 
@@ -35,13 +34,14 @@ public class CashSessionService {
     private final CurrentUser currentUser;
     private final AuditEventService auditEventService;
     private final TicketRepository ticketRepository;
-    private final Clock clock;
+    private final BusinessTimeService businessTime;
     private final ActiveStoreContext storeContext;
 
     public CashSessionService(CashSessionRepository sessionRepository, CashRegisterRepository registerRepository,
                               NegocioRepository negocioRepository, UserRepository userRepository,
                               CurrentUser currentUser, AuditEventService auditEventService,
-                              TicketRepository ticketRepository, Clock clock, ActiveStoreContext storeContext) {
+                              TicketRepository ticketRepository, BusinessTimeService businessTime,
+                              ActiveStoreContext storeContext) {
         this.sessionRepository = sessionRepository;
         this.registerRepository = registerRepository;
         this.negocioRepository = negocioRepository;
@@ -49,7 +49,7 @@ public class CashSessionService {
         this.currentUser = currentUser;
         this.auditEventService = auditEventService;
         this.ticketRepository = ticketRepository;
-        this.clock = clock;
+        this.businessTime = businessTime;
         this.storeContext=storeContext;
     }
 
@@ -91,7 +91,7 @@ public class CashSessionService {
                     "El usuario ya es responsable de una sesión abierta");
         }
 
-        LocalDateTime openedAt = LocalDateTime.now(clock);
+        LocalDateTime openedAt = businessTime.nowForStorage();
         CashSession session = CashSession.builder()
                 .negocio(negocio).store(register.getStore()).cashRegister(register).status(CashSessionStatus.OPEN)
                 .openingFloat(openingFloat).openedBy(responsible)

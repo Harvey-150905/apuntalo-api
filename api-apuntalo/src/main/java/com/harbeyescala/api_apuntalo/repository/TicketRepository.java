@@ -81,6 +81,7 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
         )
         FROM Ticket t
         WHERE t.negocio.id = :negocioId
+        AND t.store.id = :storeId
         AND t.status = :status
         AND t.paidAt >= :from AND t.paidAt < :to
         GROUP BY t.paidBy.id, t.paidBy.username
@@ -88,6 +89,7 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
     """)
     List<UserSalesSummaryDto> findUserSalesSummaryByNegocioIdAndStatusAndPaidAtBetween(
         @Param("negocioId") Long negocioId,
+        @Param("storeId") Long storeId,
         @Param("status") TicketStatus status,
         @Param("from") LocalDateTime from,
         @Param("to") LocalDateTime to
@@ -110,9 +112,31 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
         LocalDateTime from,
         LocalDateTime to
     );
+    Long countByNegocioIdAndStoreIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThan(
+        Long negocioId,
+        Long storeId,
+        TicketStatus status,
+        LocalDateTime from,
+        LocalDateTime to
+    );
 
     Long countByNegocioIdAndStatusAndUpdatedAtGreaterThanEqualAndUpdatedAtLessThan(
         Long negocioId,
+        TicketStatus status,
+        LocalDateTime from,
+        LocalDateTime to
+    );
+    Long countByNegocioIdAndStoreIdAndStatusAndUpdatedAtGreaterThanEqualAndUpdatedAtLessThan(
+        Long negocioId,
+        Long storeId,
+        TicketStatus status,
+        LocalDateTime from,
+        LocalDateTime to
+    );
+
+    Long countByNegocioIdAndStoreIdAndStatusAndCancelledAtGreaterThanEqualAndCancelledAtLessThan(
+        Long negocioId,
+        Long storeId,
         TicketStatus status,
         LocalDateTime from,
         LocalDateTime to
@@ -138,8 +162,55 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
 
     @EntityGraph(attributePaths = {"mesa", "createdBy", "paidBy", "originCashSession",
             "originCashSession.cashRegister", "originCashSession.openedBy"})
+    Page<Ticket> findByNegocioIdAndStoreIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
+        Long negocioId,
+        Long storeId,
+        TicketStatus status,
+        LocalDateTime from,
+        LocalDateTime to,
+        Pageable pageable
+    );
+
+    @EntityGraph(attributePaths = {"mesa", "createdBy", "paidBy", "originCashSession",
+            "originCashSession.cashRegister", "originCashSession.openedBy"})
+    @Query("""
+        SELECT t FROM Ticket t
+        WHERE t.negocio.id = :negocioId
+          AND t.store.id = :storeId
+          AND t.status = :status
+          AND t.paidAt >= :from
+          AND t.paidAt < :to
+          AND (:paymentMethod IS NULL OR t.paymentMethod = :paymentMethod)
+          AND (:userId IS NULL OR t.paidBy.id = :userId)
+          AND (:mesaId IS NULL OR t.mesa.id = :mesaId)
+          AND (:commercialNumber IS NULL OR t.commercialNumber = :commercialNumber)
+        """)
+    Page<Ticket> searchPaidHistory(
+            @Param("negocioId") Long negocioId,
+            @Param("storeId") Long storeId,
+            @Param("status") TicketStatus status,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("paymentMethod") PaymentMethod paymentMethod,
+            @Param("userId") Long userId,
+            @Param("mesaId") Long mesaId,
+            @Param("commercialNumber") Long commercialNumber,
+            Pageable pageable
+    );
+
+    @EntityGraph(attributePaths = {"mesa", "createdBy", "paidBy", "originCashSession",
+            "originCashSession.cashRegister", "originCashSession.openedBy"})
     Page<Ticket> findByNegocioIdAndStatusOrderByCreatedAtDesc(
         Long negocioId,
+        TicketStatus status,
+        Pageable pageable
+    );
+
+    @EntityGraph(attributePaths = {"mesa", "createdBy", "paidBy", "originCashSession",
+            "originCashSession.cashRegister", "originCashSession.openedBy"})
+    Page<Ticket> findByNegocioIdAndStoreIdAndStatusOrderByCreatedAtDesc(
+        Long negocioId,
+        Long storeId,
         TicketStatus status,
         Pageable pageable
     );
@@ -150,6 +221,25 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
         Long negocioId,
         TicketStatus status,
         Pageable pageable
+    );
+
+    @EntityGraph(attributePaths = {"mesa", "createdBy", "paidBy", "originCashSession",
+            "originCashSession.cashRegister", "originCashSession.openedBy"})
+    Page<Ticket> findByNegocioIdAndStoreIdAndStatusOrderByUpdatedAtDesc(
+        Long negocioId,
+        Long storeId,
+        TicketStatus status,
+        Pageable pageable
+    );
+
+    @EntityGraph(attributePaths = {"mesa", "createdBy", "paidBy", "originCashSession",
+            "originCashSession.cashRegister", "originCashSession.openedBy"})
+    List<Ticket> findByNegocioIdAndStoreIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
+        Long negocioId,
+        Long storeId,
+        TicketStatus status,
+        LocalDateTime from,
+        LocalDateTime to
     );
 
     @EntityGraph(attributePaths = {"mesa", "createdBy", "paidBy", "originCashSession",

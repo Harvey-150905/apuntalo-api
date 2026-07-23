@@ -3,7 +3,6 @@ package com.harbeyescala.api_apuntalo.service;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -85,8 +84,9 @@ public class TicketService {
     private final AuditEventService auditEventService;
     private final AuditFailureRecorder auditFailureRecorder;
     private final CurrentUser currentUser;
-    private final Clock clock;
     private final ActiveStoreContext storeContext;
+    private final BusinessTimeService businessTime;
+    private final ReportDateRangePolicy dateRangePolicy;
 
     public TicketService(
             TicketRepository ticketRepository,
@@ -102,8 +102,9 @@ public class TicketService {
             AuditEventService auditEventService,
             AuditFailureRecorder auditFailureRecorder,
             CurrentUser currentUser,
-            Clock clock,
-            ActiveStoreContext storeContext
+            ActiveStoreContext storeContext,
+            BusinessTimeService businessTime,
+            ReportDateRangePolicy dateRangePolicy
     ) {
         this.ticketRepository = ticketRepository;
         this.mesaRepository = mesaRepository;
@@ -118,8 +119,9 @@ public class TicketService {
         this.auditEventService = auditEventService;
         this.auditFailureRecorder = auditFailureRecorder;
         this.currentUser = currentUser;
-        this.clock = clock;
         this.storeContext=storeContext;
+        this.businessTime = businessTime;
+        this.dateRangePolicy = dateRangePolicy;
     }
 
     // ------------------------------------------------------------------
@@ -164,6 +166,7 @@ public class TicketService {
         User createdBy = userRepository.findByIdAndNegocioId(userId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
 
+        LocalDateTime now = businessTime.nowForStorage();
         Ticket ticket = Ticket.builder()
                 .status(TicketStatus.OPEN)
                 .total(BigDecimal.ZERO)
@@ -174,6 +177,8 @@ public class TicketService {
                 .createdBy(createdBy)
                 .originCashSession(originSession)
                 .originSessionLegacy(false)
+                .createdAt(now)
+                .updatedAt(now)
                 .build();
 
         // La restricción única parcial "uk_ticket_mesa_open" (Postgres) es la
@@ -288,6 +293,7 @@ public class TicketService {
                         .batchNumber(newBatch)
                         .status(TicketLineStatus.ACTIVE)
                         .notes(groupedLine.getNotes())
+                        .createdAt(businessTime.nowForStorage())
                         .build();
 
                 ticketLineRepository.save(ticketLine);
@@ -362,7 +368,7 @@ public class TicketService {
         User paidBy = userRepository.findByIdAndNegocioId(userId, tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
 
-        LocalDateTime paidAt = LocalDateTime.now(clock);
+        LocalDateTime paidAt = businessTime.nowForStorage();
         List<Payment> payments = validatedPayments.stream()
                 .map(component -> Payment.builder()
                         .negocioId(tenantId)
@@ -588,7 +594,7 @@ public class TicketService {
         User cancelledBy = userRepository.findByIdAndNegocioId(userId, tenantId).orElse(null);
 
         ticket.setStatus(TicketStatus.CANCELLED);
-        ticket.setCancelledAt(LocalDateTime.now(clock));
+        ticket.setCancelledAt(businessTime.nowForStorage());
         ticket.setCancelledBy(cancelledBy);
         ticketRepository.save(ticket);
 
@@ -746,7 +752,7 @@ public class TicketService {
                 User actor = userRepository.findByIdAndNegocioId(userId, tenantId)
                         .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
                 line.setDiscountAppliedBy(actor);
-                line.setDiscountAppliedAt(LocalDateTime.now(clock));
+                line.setDiscountAppliedAt(businessTime.nowForStorage());
             }
         } catch (BusinessRuleException | ConflictException ex) {
             auditFailureSafely(AuditEntityType.TICKET_LINE, lineId, AuditAction.LINE_DISCOUNT_APPLIED, ex.getCode());
@@ -804,8 +810,9 @@ public class TicketService {
         Long tenantId = currentUser.getTenantId();
         validateDateRange(from, to);
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         BigDecimal cashTotal = paymentRepository.sumAmount(
                         tenantId,
@@ -852,13 +859,16 @@ public class TicketService {
     @Transactional(readOnly = true)
     public List<TicketResponseDto> findPaidTicketsByDateRange(LocalDate from, LocalDate to) {
         Long tenantId = currentUser.getTenantId();
+        validateDateRange(from, to);
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         return toResponses(ticketRepository
-                .findByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
+                .findByNegocioIdAndStoreIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
                         tenantId,
+                        storeContext.storeId(),
                         TicketStatus.PAID,
                         fromDateTime,
                         toDateTime
@@ -869,11 +879,13 @@ public class TicketService {
         Long tenantId = currentUser.getTenantId();
         validateDateRange(from, to);
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         return ticketRepository.findUserSalesSummaryByNegocioIdAndStatusAndPaidAtBetween(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
@@ -925,8 +937,9 @@ public class TicketService {
         Long tenantId = currentUser.getTenantId();
         validateDateRange(from, to);
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         BigDecimal total = ticketRepository
                 .sumTotalByNegocioIdAndStatusAndPaidAtBetween(
@@ -944,8 +957,9 @@ public class TicketService {
         Long tenantId = currentUser.getTenantId();
         validateDateRange(from, to);
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         BigDecimal totalSales = ticketRepository.sumTotalByNegocioIdAndStatusAndPaidAtBetween(
                 tenantId,
@@ -973,15 +987,17 @@ public class TicketService {
                 toDateTime
         );
 
-        Long paidTickets = ticketRepository.countByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThan(
+        Long paidTickets = ticketRepository.countByNegocioIdAndStoreIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThan(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
         );
 
-        Long cancelledTickets = ticketRepository.countByNegocioIdAndStatusAndUpdatedAtGreaterThanEqualAndUpdatedAtLessThan(
+        Long cancelledTickets = ticketRepository.countByNegocioIdAndStoreIdAndStatusAndCancelledAtGreaterThanEqualAndCancelledAtLessThan(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.CANCELLED,
                 fromDateTime,
                 toDateTime
@@ -1006,8 +1022,9 @@ public class TicketService {
                 org.springframework.data.domain.Sort.Order.desc("id")));
 
         Page<Ticket> ticketPage = ticketRepository
-            .findByNegocioIdAndStatusOrderByCreatedAtDesc(
+            .findByNegocioIdAndStoreIdAndStatusOrderByCreatedAtDesc(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.OPEN,
                 pageable
             );
@@ -1025,8 +1042,9 @@ public class TicketService {
                 org.springframework.data.domain.Sort.Order.desc("id")));
 
         Page<Ticket> ticketPage = ticketRepository
-            .findByNegocioIdAndStatusOrderByUpdatedAtDesc(
+            .findByNegocioIdAndStoreIdAndStatusOrderByUpdatedAtDesc(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.CANCELLED,
                 pageable
             );
@@ -1039,11 +1057,13 @@ public class TicketService {
 
         validateDateRange(from, to);
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         return ticketLineRepository.findProductSalesSummary(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 TicketLineStatus.ACTIVE,
                 fromDateTime,
@@ -1056,12 +1076,14 @@ public class TicketService {
 
         validateDateRange(from, to);
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         List<Ticket> paidTickets = ticketRepository
-                .findByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
+                .findByNegocioIdAndStoreIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
                         tenantId,
+                        storeContext.storeId(),
                         TicketStatus.PAID,
                         fromDateTime,
                         toDateTime
@@ -1078,7 +1100,7 @@ public class TicketService {
                 continue;
             }
 
-            LocalDate day = ticket.getPaidAt().toLocalDate();
+            LocalDate day = businessTime.businessDate(ticket.getPaidAt(), range.storeZone());
             DailyAccumulator acc = dailyMap.get(day);
 
             if (acc != null) {
@@ -1101,8 +1123,9 @@ public class TicketService {
 
         validateDateRange(from, to);
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         BigDecimal totalSales = ticketRepository.sumTotalByNegocioIdAndStatusAndPaidAtBetween(
                 tenantId,
@@ -1112,8 +1135,9 @@ public class TicketService {
                 toDateTime
         );
 
-        Long ticketCount = ticketRepository.countByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThan(
+        Long ticketCount = ticketRepository.countByNegocioIdAndStoreIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThan(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime
@@ -1153,26 +1177,38 @@ public class TicketService {
         LocalDate from,
         LocalDate to,
         int page,
-        int size
+        int size,
+        PaymentMethod paymentMethod,
+        Long userId,
+        Long mesaId,
+        Long commercialNumber
     ) {
         PaginationPolicy.validate(page, size);
         validateDateRange(from, to);
+        validatePositiveFilter(userId, "INVALID_USER_ID", "userId");
+        validatePositiveFilter(mesaId, "INVALID_MESA_ID", "mesaId");
+        validatePositiveFilter(commercialNumber, "INVALID_COMMERCIAL_NUMBER", "commercialNumber");
 
         Long tenantId = currentUser.getTenantId();
 
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.plusDays(1).atStartOfDay();
+        BusinessTimeService.StoreDateRange range = businessTime.range(from, to);
+        LocalDateTime fromDateTime = range.fromInclusive();
+        LocalDateTime toDateTime = range.toExclusive();
 
         Pageable pageable = PageRequest.of(page, size, org.springframework.data.domain.Sort.by(
                 org.springframework.data.domain.Sort.Order.desc("paidAt"),
                 org.springframework.data.domain.Sort.Order.desc("id")));
 
-        Page<Ticket> ticketPage = ticketRepository
-            .findByNegocioIdAndStatusAndPaidAtGreaterThanEqualAndPaidAtLessThanOrderByPaidAtDesc(
+        Page<Ticket> ticketPage = ticketRepository.searchPaidHistory(
                 tenantId,
+                storeContext.storeId(),
                 TicketStatus.PAID,
                 fromDateTime,
                 toDateTime,
+                paymentMethod,
+                userId,
+                mesaId,
+                commercialNumber,
                 pageable
             );
 
@@ -1600,15 +1636,15 @@ public class TicketService {
     }
 
     private void validateDateRange(LocalDate from, LocalDate to) {
-        if (from == null || to == null) {
-            throw new BusinessRuleException("INVALID_DATE_RANGE", "Debes enviar ambas fechas");
-        }
+        dateRangePolicy.validate(from, to);
+    }
 
-        if (from.isAfter(to)) {
-            throw new BusinessRuleException("INVALID_DATE_RANGE", "La fecha 'from' no puede ser mayor que 'to'");
-        }
-        if (LocalDate.MAX.equals(to)) {
-            throw new BusinessRuleException("INVALID_DATE_RANGE", "La fecha 'to' está fuera del rango permitido");
+    private void validatePositiveFilter(Long value, String code, String parameter) {
+        if (value != null && value <= 0) {
+            throw new BusinessRuleException(
+                    code,
+                    "El parámetro '" + parameter + "' debe ser mayor que cero"
+            );
         }
     }
 

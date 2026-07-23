@@ -12,17 +12,17 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
-import java.math.*; import java.time.LocalDateTime; import java.time.Clock; import java.util.*;
+import java.math.*; import java.time.LocalDateTime; import java.util.*;
 
 @Service
 public class CashSessionOperationService {
  private static final BigDecimal MAX_AMOUNT=new BigDecimal("99999999.99");
  private final CashSessionRepository sessions; private final CashMovementRepository movements;
  private final PaymentRepository payments; private final TicketRepository tickets; private final UserRepository users;
- private final CurrentUser current; private final AuditEventService audit; private final Clock clock;
+ private final CurrentUser current; private final AuditEventService audit; private final BusinessTimeService businessTime;
  public CashSessionOperationService(CashSessionRepository sessions,CashMovementRepository movements,
-  PaymentRepository payments,TicketRepository tickets,UserRepository users,CurrentUser current,AuditEventService audit,Clock clock){
-  this.sessions=sessions;this.movements=movements;this.payments=payments;this.tickets=tickets;this.users=users;this.current=current;this.audit=audit;this.clock=clock;
+  PaymentRepository payments,TicketRepository tickets,UserRepository users,CurrentUser current,AuditEventService audit,BusinessTimeService businessTime){
+  this.sessions=sessions;this.movements=movements;this.payments=payments;this.tickets=tickets;this.users=users;this.current=current;this.audit=audit;this.businessTime=businessTime;
  }
 
  @Transactional
@@ -37,7 +37,7 @@ public class CashSessionOperationService {
   Totals before=totals(session,tenant);
   BigDecimal after=type==CashMovementType.CASH_IN?before.expectedCash().add(amount):before.expectedCash().subtract(amount);
   if(after.signum()<0) throw new BusinessRuleException("INSUFFICIENT_EXPECTED_CASH","La salida dejaría el efectivo esperado por debajo de cero");
-  User actor=actor(tenant); LocalDateTime now=LocalDateTime.now(clock);
+  User actor=actor(tenant); LocalDateTime now=businessTime.nowForStorage();
   CashMovement movement=movements.saveAndFlush(CashMovement.builder().negocio(session.getNegocio()).store(session.getStore()).cashSession(session)
     .type(type).amount(amount).reason(reason).performedBy(actor).performedAt(now).createdAt(now).build());
   Map<String,Object> meta=movementMetadata(session,actor,type,amount,reason,after);
@@ -72,7 +72,7 @@ public class CashSessionOperationService {
    counted=money(request.getCountedCash(),"INVALID_COUNTED_CASH"); if(counted.signum()<0) throw new BusinessRuleException("INVALID_COUNTED_CASH","El efectivo contado no puede ser negativo");
    difference=counted.subtract(totals.expectedCash()).setScale(2,RoundingMode.HALF_UP);
   } else if(request.getCountedCash()!=null) throw new BusinessRuleException("COUNTED_CASH_NOT_ALLOWED","Esta sesión no requiere conciliación");
-  LocalDateTime now=LocalDateTime.now(clock); boolean responsible=session.getOpenedBy().getId().equals(actor.getId());
+  LocalDateTime now=businessTime.nowForStorage(); boolean responsible=session.getOpenedBy().getId().equals(actor.getId());
   session.setClosedBy(actor);session.setClosedAt(now);session.setCloseMode(responsible?CashSessionCloseMode.RESPONSIBLE:CashSessionCloseMode.SUPERVISED);
   session.setExpectedCashAtClose(totals.expectedCash());session.setCountedCash(counted);session.setDifference(difference);
   session.setPendingTicketCountAtClose(pendingCount);session.setPendingTicketAmountAtClose(pendingAmount);

@@ -18,6 +18,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.Comparator;
 import java.util.Collections;
@@ -144,6 +145,20 @@ public class GlobalExceptionHandler {
             case ErrorCodes.INVALID_FIELD_TYPE -> "La petición contiene un campo con un tipo no válido";
             default -> "El cuerpo de la petición no es un JSON válido";
         };
+        return error(HttpStatus.BAD_REQUEST, code, message, request);
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiError> queryParameterTypeMismatch(
+            MethodArgumentTypeMismatchException ex,
+            HttpServletRequest request
+    ) {
+        String code = ex.getRequiredType() != null && ex.getRequiredType().isEnum()
+                ? ErrorCodes.INVALID_ENUM_VALUE
+                : ErrorCodes.INVALID_FIELD_TYPE;
+        String message = code.equals(ErrorCodes.INVALID_ENUM_VALUE)
+                ? "La petición contiene un valor de enum no válido"
+                : "La petición contiene un parámetro con un tipo no válido";
         return error(HttpStatus.BAD_REQUEST, code, message, request);
     }
 

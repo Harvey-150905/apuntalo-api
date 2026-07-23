@@ -22,7 +22,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.time.Clock;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -37,20 +36,21 @@ public class CashRegisterService {
     private final CurrentUser currentUser;
     private final AuditEventService auditEventService;
     private final CashSessionRepository cashSessionRepository;
-    private final Clock clock;
+    private final BusinessTimeService businessTime;
     private final ActiveStoreContext storeContext;
 
     public CashRegisterService(CashRegisterRepository repository, NegocioRepository negocioRepository,
                                UserRepository userRepository, CurrentUser currentUser,
                                AuditEventService auditEventService,
-                               CashSessionRepository cashSessionRepository, Clock clock, ActiveStoreContext storeContext) {
+                               CashSessionRepository cashSessionRepository,
+                               BusinessTimeService businessTime, ActiveStoreContext storeContext) {
         this.repository = repository;
         this.negocioRepository = negocioRepository;
         this.userRepository = userRepository;
         this.currentUser = currentUser;
         this.auditEventService = auditEventService;
         this.cashSessionRepository = cashSessionRepository;
-        this.clock = clock;
+        this.businessTime = businessTime;
         this.storeContext=storeContext;
     }
 
@@ -66,7 +66,7 @@ public class CashRegisterService {
         Negocio negocio = negocioRepository.findById(tenantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado"));
         User actor = currentActor(tenantId);
-        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime now = businessTime.nowForStorage();
         CashRegister register = CashRegister.builder()
                 .negocio(negocio).store(storeContext.requireStore()).name(name).normalizedName(normalized).active(true)
                 .createdAt(now).updatedAt(now).createdBy(actor).updatedBy(actor).build();
@@ -160,12 +160,12 @@ public class CashRegisterService {
     }
 
     private void touch(CashRegister register, Long tenantId) {
-        register.setUpdatedAt(LocalDateTime.now(clock));
+        register.setUpdatedAt(businessTime.nowForStorage());
         register.setUpdatedBy(currentActor(tenantId));
     }
 
     private void touch(CashRegister register, User actor) {
-        register.setUpdatedAt(LocalDateTime.now(clock));
+        register.setUpdatedAt(businessTime.nowForStorage());
         register.setUpdatedBy(actor);
     }
 

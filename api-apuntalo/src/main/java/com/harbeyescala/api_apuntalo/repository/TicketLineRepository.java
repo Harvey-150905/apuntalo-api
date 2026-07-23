@@ -30,6 +30,7 @@ public interface TicketLineRepository extends JpaRepository<TicketLine, Long> {
         FROM TicketLine tl
         JOIN tl.ticket t
         WHERE t.negocio.id = :negocioId
+          AND t.store.id = :storeId
           AND t.status = :ticketStatus
           AND tl.status = :lineStatus
           AND t.paidAt >= :from AND t.paidAt < :to
@@ -38,6 +39,7 @@ public interface TicketLineRepository extends JpaRepository<TicketLine, Long> {
     """)
     List<ProductSalesSummaryDto> findProductSalesSummary(
         @Param("negocioId") Long negocioId,
+        @Param("storeId") Long storeId,
         @Param("ticketStatus") TicketStatus ticketStatus,
         @Param("lineStatus") TicketLineStatus lineStatus,
         @Param("from") LocalDateTime from,
